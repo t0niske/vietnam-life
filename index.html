@@ -420,7 +420,8 @@ body{margin:0}
 </head>
 <body>
 <div id="root"></div>
-<script>window.VL_IMG={"apt1": "img/apt1.jpg", "apt2": "img/apt2.jpg", "apt3": "img/apt3.jpg", "apt4": "img/apt4.jpg", "apt_main": "img/apt_main.jpg", "avatar": "img/avatar.jpg", "bali": "img/bali.jpg", "danang_card": "img/danang_card.jpg", "food1": "img/food1.jpg", "food2": "img/food2.jpg", "food3": "img/food3.jpg", "food4": "img/food4.jpg", "hero": "img/hero.jpg", "ic_calendar": "img/ic_calendar.png", "ic_clock": "img/ic_clock.png", "ic_target": "img/ic_target.png", "ic_wallet": "img/ic_wallet.png", "logo": "img/logo.png", "map": "img/map.png", "notes_photo": "img/notes_photo.jpg", "palms": "img/palms.jpg", "trip1": "img/trip1.jpg", "trip2": "img/trip2.jpg", "trip3": "img/trip3.jpg"};</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>window.VL_IMG={"apt1": "img/apt1.jpg", "apt2": "img/apt2.jpg", "apt3": "img/apt3.jpg", "apt4": "img/apt4.jpg", "apt_main": "img/apt_main.jpg", "avatar": "img/avatar.jpg", "bali": "img/bali.jpg", "danang_card": "img/danang_card.jpg", "food1": "img/food1.jpg", "food2": "img/food2.jpg", "food3": "img/food3.jpg", "food4": "img/food4.jpg", "hero": "img/hero.jpg", "ic_calendar": "img/ic_calendar.png", "ic_clock": "img/ic_clock.png", "ic_target": "img/ic_target.png", "ic_wallet": "img/ic_wallet.png", "logo": "img/logo.png", "map": "img/map.png", "notes_photo": "img/notes_photo.jpg", "palms": "img/palms.jpg", "trip1": "img/trip1.jpg", "trip2": "img/trip2.jpg", "trip3": "img/trip3.jpg"};window.VL_SUPABASE={"url": "https://rdaupsnobthvisqgwpuy.supabase.co", "key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJkYXVwc25vYnRodmlzcWd3cHV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4NjA1NDEsImV4cCI6MjEwODQzNjU0MX0.tu0OT5LLVaai7YjE7k2C48Klyyaz0zNHtYDkITOQClk", "bot": "vietnam_helpbot"};</script>
 <script>function makeDemo(now){
   now=now||new Date();
   const pad=n=>String(n).padStart(2,'0');
@@ -614,6 +615,17 @@ const pct=(a,b)=>b?Math.min(100,Math.round(a/b*100)):0;
 /* ---------- state & storage ---------- */
 const S={expenses:[],utilities:[],apartments:[],goals:[],events:[],trips:[],meals:{days:[]},notes:[],health:[],useful:{},settings:{city:'Нячанг',temp:32,feels:36,rate:25000,budget:70000000,kwhPrice:3000,quote:'«Больше жизни, меньше суеты»',name:''}};
 let db=null, mode='loading', loaded=false, introDone=false;
+/* cloud mode (Supabase): signed-in members share one copy of the data; the Telegram bot writes there too */
+let sb=null, user=null, dbKind='';
+function cloudDb(){return{
+  doc:path=>({set:b=>sb.from('vl_sections').upsert({sec:path.split('/').pop(),body:b}).then(r=>{if(r.error)throw r.error})}),
+  collection:()=>({onSnapshot(cb,err){
+    const pull=()=>sb.from('vl_sections').select('sec,body').then(({data,error})=>{if(error)return err(error);cb({docs:data.map(r=>({id:r.sec,data:()=>r.body}))})});
+    pull();
+    sb.channel('vl-sections').on('postgres_changes',{event:'*',schema:'public',table:'vl_sections'},ch=>{const r=ch.new;if(r&&r.sec)cb({docs:[{id:r.sec,data:()=>r.body}]})}).subscribe();
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden)pull()});
+  }})
+}}
 const LS='vietnam-life-v1';
 function lsGet(){try{return JSON.parse(localStorage.getItem(LS)||'null')}catch(e){return null}}
 function lsSet(){try{localStorage.setItem(LS,JSON.stringify(S))}catch(e){}}
@@ -629,6 +641,15 @@ async function init(){
   render();
   let d=null;
   try{ d=window.claude&&window.claude.use?await window.claude.use('db'):null }catch(e){d=null}
+  if(d)dbKind='artifact';
+  else if(window.supabase&&window.VL_SUPABASE){
+    try{
+      sb=window.supabase.createClient(VL_SUPABASE.url,VL_SUPABASE.key);
+      const {data}=await sb.auth.getSession();user=data.session?data.session.user:null;
+      sb.auth.onAuthStateChange((ev,ses)=>{const u=ses?ses.user:null;if((u&&u.id)!==(user&&user.id))location.reload()});
+      if(user){d=cloudDb();dbKind='cloud'}
+    }catch(e){sb=null}
+  }
   if(d){
     db=d;mode='db';
     db.collection('vl').onSnapshot(snap=>{
@@ -681,7 +702,7 @@ function shell(){
       </div>
     </header>
     <div class="page" id="page"></div>
-    <div class="status">${mode==='db'?'Данные сохраняются в облаке артефакта и видны всем, с кем вы поделитесь страницей.':mode==='local'?'Данные сохраняются в этом браузере.':'Загрузка данных…'}</div>
+    <div class="status">${dbKind==='cloud'?'Данные синхронизируются через облако · '+esc(user.email):mode==='db'?'Данные сохраняются в облаке артефакта и видны всем, с кем вы поделитесь страницей.':mode==='local'?'Данные сохраняются в этом браузере.':'Загрузка данных…'}</div>
   </main></div>`;
 }
 
@@ -916,6 +937,16 @@ function usefulPage(){
   return `<div class="ptitle"><h2>Полезное</h2><span class="muted">Своя шпаргалка по жизни во Вьетнаме. Текст можно редактировать.</span></div>
   <div class="gridc">${USEFUL.map(([k,l,i])=>`<div class="card"><div class="chd"><div class="ib y">${ic(i)}</div><h3>${l}</h3><button class="btn ghost sp" data-act="useful" data-k="${k}">${ic('edit')} Изменить</button></div><div style="font-size:12.5px;white-space:pre-wrap;line-height:1.55">${esc(S.useful[k]||'Пока пусто')}</div></div>`).join('')}</div>`;
 }
+function accountCard(){
+  if(!user)return `<div class="card"><div class="chd"><div class="ib g">${ic('home')}</div><div><h3>Вход и синхронизация</h3><div class="sub">Общие данные на всех устройствах и Telegram-бот</div></div></div>
+  <form id="loginf" class="fgrid"><label class="field full">Email участника<input name="email" id="login-email" type="email" required autocomplete="email" placeholder="you@example.com"></label>
+  <div class="full"><button class="btn" type="submit">${ic('arrow')} Получить ссылку для входа</button></div></form>
+  <p class="muted" style="font-size:11.5px;margin:10px 0 0">На почту придёт ссылка: откройте её на этом устройстве. Войти могут только адреса из списка участников.</p></div>`;
+  return `<div class="card"><div class="chd"><div class="ib g">${ic('check')}</div><div><h3>Вы вошли</h3><div class="sub">${esc(user.email)}</div></div><button class="btn ghost sp" data-act="logout">Выйти</button></div>
+  <p style="font-size:12.5px;margin:0 0 10px">Telegram-бот <b>@${VL_SUPABASE.bot}</b> принимает голосовые и текст и сам добавляет расходы, события и заметки.</p>
+  <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-act="tgLink">${ic('plane')} Подключить Telegram</button><button class="btn ghost" data-act="pushLocal">Перенести данные из этого браузера</button></div>
+  <div id="tgbox"></div></div>`;
+}
 function settingsPage(){
   const s=S.settings;
   return `<div class="ptitle"><h2>Настройки</h2></div>
@@ -929,7 +960,8 @@ function settingsPage(){
   <label class="field">Цена кВт·ч, ₫<input name="kwhPrice" id="s-kwh" type="number" value="${esc(s.kwhPrice)}"></label>
   <label class="field full">Девиз под приветствием<input name="quote" id="s-quote" value="${esc(s.quote)}"></label>
   <div class="full"><button class="btn" type="submit">${ic('check')} Сохранить</button></div></form></div>
-  <div class="card"><div class="chd"><h3>Данные</h3></div><p style="font-size:12.5px;margin-top:0">${mode==='db'?'Данные хранятся в базе этого артефакта. Поделитесь страницей с партнёром (уровень «Участник» или выше), и вы будете вести бюджет вместе.':'Данные хранятся в этом браузере.'}</p>
+  ${sb?accountCard():''}
+  <div class="card"><div class="chd"><h3>Данные</h3></div><p style="font-size:12.5px;margin-top:0">${dbKind==='cloud'?'Данные хранятся в облаке и общие для всех участников. Telegram-бот добавляет записи сюда же.':mode==='db'?'Данные хранятся в базе этого артефакта. Поделитесь страницей с партнёром (уровень «Участник» или выше), и вы будете вести бюджет вместе.':'Данные хранятся в этом браузере.'}</p>
   <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" data-act="exportJson">${ic('copy')} Экспорт в JSON</button><button class="btn ghost" data-act="importJson">Импорт из JSON</button><button class="btn danger" data-act="resetDemo">Загрузить пример из макета</button><button class="btn danger" data-act="clearAll">Очистить всё</button></div>
   <textarea id="jsonbox" class="notearea" style="margin-top:12px;min-height:140px" placeholder="Здесь появится JSON для копирования, или вставьте сюда JSON для импорта" hidden></textarea>
   <div id="confirm"></div></div></div>`;
@@ -1034,6 +1066,12 @@ function act(a,el){
   case 'delNote':remove('notes',id);break;
   case 'useful':{const k=el.dataset.k;const l=USEFUL.find(u=>u[0]===k);form(l[1],[{k:'text',l:'Заметки',t:'area'}],{text:S.useful[k]||''},o=>{S.useful={...S.useful,[k]:o.text};save('useful')});break}
   case 'clearq':U.q='';break;
+  case 'logout':sb.auth.signOut();break;
+  case 'tgLink':{const code=Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,6);
+    sb.from('vl_tg_codes').insert({code,email:user.email}).then(({error})=>{const b=$('#tgbox');if(!b)return;if(error){toast('Не получилось: '+error.message);return}
+      const url='https://t.me/'+VL_SUPABASE.bot+'?start='+code;b.innerHTML=`<div style="margin-top:12px;padding:12px;border-radius:10px;background:var(--green-soft);font-size:12.5px">Откройте ссылку и нажмите «Start» в Telegram (действует 15 минут):<br><a class="link" style="margin-top:6px;color:var(--green)" href="${url}" target="_blank" rel="noopener">${url} ${ic('arrow')}</a></div>`})}break;
+  case 'pushLocal':{const l=lsGet();if(!l){toast('В этом браузере нет сохранённых данных');break}
+    confirmBox('Заменить облачные данные данными из этого браузера?',()=>{SECS.forEach(k=>{if(l[k]!=null){S[k]=l[k];db.doc('vl/'+k).set(JSON.parse(JSON.stringify(body(k)))).catch(e=>toast('Ошибка: '+e.message))}});render();toast('Данные перенесены в облако')});break}
   case 'exportJson':{const b=$('#jsonbox');b.hidden=false;b.value=JSON.stringify(S,null,1);b.select();try{navigator.clipboard.writeText(b.value).then(()=>toast('JSON скопирован'),()=>toast('Выделите и скопируйте текст'))}catch(e){}break}
   case 'importJson':{const b=$('#jsonbox');if(b.hidden||!b.value.trim()){b.hidden=false;b.value='';b.focus();toast('Вставьте JSON и нажмите «Импорт» ещё раз');break}try{const d=JSON.parse(b.value);SECS.forEach(s=>{if(d[s]!=null){S[s]=d[s];save(s)}});toast('Данные импортированы')}catch(e){toast('Это не похоже на корректный JSON')}break}
   case 'resetDemo':confirmBox('Заменить все данные примером из макета?',()=>loadDemo());break;
@@ -1056,7 +1094,9 @@ function bind(){
   rootEl.addEventListener('change',e=>{const el=e.target;const a=el.dataset&&el.dataset.act;if(!a)return;if(a in U){U[a]=el.value;render()}});
   rootEl.addEventListener('input',e=>{if(e.target.id==='q'){U.q=e.target.value;searchRender()}if(/^kw/.test(e.target.id))kwCalc()});
   rootEl.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='newnote'){e.preventDefault();act('addNote',e.target)}if(e.key==='Enter'&&e.target.id&&e.target.id.startsWith('ck-')){e.preventDefault();act('addCheck',{dataset:{id:e.target.id.slice(3)}})}});
-  rootEl.addEventListener('submit',e=>{if(e.target.id==='setf'){e.preventDefault();const fd=new FormData(e.target);const o={};fd.forEach((v,k)=>o[k]=['temp','feels','rate','budget','kwhPrice'].includes(k)?Number(v):v);S.settings={...S.settings,...o};save('settings');toast('Сохранено')}});
+  rootEl.addEventListener('submit',e=>{if(e.target.id==='loginf'){e.preventDefault();const email=e.target.email.value.trim();const btn=e.target.querySelector('button');btn.disabled=true;
+      sb.auth.signInWithOtp({email,options:{emailRedirectTo:location.origin+location.pathname}}).then(({error})=>{btn.disabled=false;toast(error?(/closed|закрыта|Database error/i.test(error.message)?'Этого адреса нет в списке участников':'Ошибка: '+error.message):'Ссылка для входа отправлена на '+email)});return}
+    if(e.target.id==='setf'){e.preventDefault();const fd=new FormData(e.target);const o={};fd.forEach((v,k)=>o[k]=['temp','feels','rate','budget','kwhPrice'].includes(k)?Number(v):v);S.settings={...S.settings,...o};save('settings');toast('Сохранено')}});
 }
 document.addEventListener('DOMContentLoaded',()=>{rootEl=document.getElementById('root');bind();init()});
 if(document.readyState!=='loading'){rootEl=document.getElementById('root');bind();init()}
