@@ -33,7 +33,8 @@ const say = (chat_id: number, text: string, extra: Record<string, unknown> = {})
   tg("sendMessage", { chat_id, text, parse_mode: "HTML", disable_web_page_preview: true, ...extra });
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-const money = (n: number) => Math.round(n).toLocaleString("ru-RU").replace(/\u202f|\u00a0/g, "\u00a0") + "\u00a0₫";
+const num = (n: number) => Math.round(n).toLocaleString("ru-RU").replace(/\u202f|\u00a0/g, "\u00a0");
+const money = (n: number) => num(n) + "\u00a0₫";
 const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
 const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date());
 const weekday = () => new Intl.DateTimeFormat("ru-RU", { timeZone: TZ, weekday: "long" }).format(new Date());
@@ -90,7 +91,7 @@ const RECORD_SCHEMA = {
         additionalProperties: false,
         required: ["kind", "date", "title", "amount_vnd", "category", "event_type", "time_from", "time_to", "health_kind"],
         properties: {
-          kind: { type: "string", enum: ["expense", "event", "note", "health"] },
+          kind: { type: "string", enum: ["expense", "event", "note", "health", "goal"] },
           date: { type: "string", description: "YYYY-MM-DD" },
           title: { type: "string" },
           amount_vnd: { type: "number" },
@@ -107,7 +108,7 @@ const RECORD_SCHEMA = {
 };
 
 type Rec = {
-  kind: "expense" | "event" | "note" | "health"; date: string; title: string; amount_vnd: number;
+  kind: "expense" | "event" | "note" | "health" | "goal"; date: string; title: string; amount_vnd: number;
   category: string; event_type: string; time_from: string; time_to: string; health_kind: string;
 };
 
@@ -120,6 +121,8 @@ const prompt = (rate: number) => `Ты разбираешь короткие г�
 - note: задача без даты («купить переходник», «продлить визу»). title — текст задачи.
 - health: уже состоявшийся визит к врачу, сданные анализы, оплаченная страховка — запись в медицинскую историю. health_kind из списка, amount_vnd — стоимость, если есть.
   Если за медицину заплатили, добавь ещё expense с этой суммой и category "Здоровье", чтобы она попала в бюджет.
+- goal: цель накопить деньги на что-то («цель накопить 38 миллионов на айфон для Насти»). title — на что копим, коротко и с заглавной буквы («iPhone 18 Pro Max для Насти»), без суммы. amount_vnd — сколько нужно накопить.
+  Слова «цель», «накопить», «откладываем на» означают goal, а не note и не expense.
 Одно сообщение может содержать несколько записей. Поля, которые не подходят к типу, оставляй пустой строкой или 0.
 Если смысл непонятен, верни пустой records и короткий уточняющий вопрос по-русски в question; иначе question пустой.`;
 
@@ -130,7 +133,7 @@ const hhmm = (t: unknown) => {
 };
 // deno-lint-ignore no-explicit-any
 function normalize(o: any): { records: Rec[]; question: string } {
-  const kinds = ["expense", "event", "note", "health"];
+  const kinds = ["expense", "event", "note", "health", "goal"];
   // deno-lint-ignore no-explicit-any
   const records = (Array.isArray(o?.records) ? o.records : []).map((r: any) => ({
     kind: kinds.includes(r?.kind) ? r.kind : "note",
@@ -146,9 +149,14 @@ function normalize(o: any): { records: Rec[]; question: string } {
   return { records, question: String(o?.question ?? "") };
 }
 
-async function extract(text: string): Promise<{ records: Rec[]; question: string }> {
+// ₫ per $ from the site's settings; goals on the site are kept in dollars
+async function usdRate(): Promise<number> {
   const { data: s } = await db.from("vl_sections").select("body").eq("sec", "settings").maybeSingle();
-  const rate = Number(s?.body?.rate) || 25000;
+  return Number(s?.body?.rate) || 25000;
+}
+
+async function extract(text: string): Promise<{ records: Rec[]; question: string }> {
+  const rate = await usdRate();
 
   // free path: Groq chat model in JSON mode
   const groq = await secret("groq_api_key");
@@ -204,6 +212,11 @@ async function save(r: Rec): Promise<{ sec: string; id: string; line: string }> 
     sec = "health";
     item = { id, date, kind: HEALTH.includes(r.health_kind) ? r.health_kind : "Другое", title: r.title, cost: Math.round(r.amount_vnd || 0), note: "" };
     line = `🩺 ${esc(r.title)} · ${dshort(date)}${r.amount_vnd ? " · " + money(r.amount_vnd) : ""}`;
+  } else if (r.kind === "goal") {
+    sec = "goals";
+    const usd = Math.round((r.amount_vnd || 0) / (await usdRate()));
+    item = { id, title: r.title, saved: 0, target: usd, color: "#2f9e5b", icon: "star", featured: false };
+    line = `🎯 Цель: ${esc(r.title)} · ${num(usd)}\u00a0$${r.amount_vnd ? " (" + money(r.amount_vnd) + ")" : ""}`;
   } else {
     sec = "notes";
     front = true;
@@ -248,7 +261,7 @@ async function handle(u: any) {
   }
   const { data: link } = await db.from("vl_tg_links").select("email").eq("chat_id", chat).maybeSingle();
   if (!link) return say(chat, `Это личный бот Vietnam Life. Чтобы подключить его, войдите на сайте ${SITE} → Настройки → «Подключить Telegram».`);
-  if (text === "/start" || text === "/help") return say(chat, "Отправьте голосовое или текст: расходы, дела в календарь, заметки, визиты к врачу. Я сам разложу всё по разделам сайта.");
+  if (text === "/start" || text === "/help") return say(chat, "Отправьте голосовое или текст: расходы, дела в календарь, заметки, визиты к врачу, цели накоплений. Я сам разложу всё по разделам сайта.");
 
   let input = text;
   const voice = m.voice ?? m.audio ?? m.video_note;
