@@ -1,4 +1,4 @@
-// Vietnam Life Telegram bot: voice or text -> transcription -> Claude extracts records -> saved to the site's data.
+// Vietnam Life Telegram bot: voice or text -> transcription -> AI extracts records -> saved to the site's data.
 // Secrets live in Supabase Vault (read through public.vl_secret, service role only).
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -39,7 +39,24 @@ const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(ne
 const weekday = () => new Intl.DateTimeFormat("ru-RU", { timeZone: TZ, weekday: "long" }).format(new Date());
 const dshort = (iso: string) => new Date(iso + "T12:00:00Z").toLocaleDateString("ru-RU", { day: "numeric", month: "long", timeZone: "UTC" });
 
-/* ---------- speech to text (Claude does not take audio): Groq Whisper, or OpenAI as an alternative ---------- */
+/* ---------- Groq (free tier): models are picked from what the account can use, so retired models don't break the bot ---------- */
+const GROQ = "https://api.groq.com/openai/v1";
+const PREFER_STT = ["whisper-large-v3-turbo", "whisper-large-v3"];
+const PREFER_LLM = ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "moonshotai/kimi-k2-instruct", "openai/gpt-oss-20b", "llama-3.1-8b-instant"];
+let groqModels: string[] | null = null;
+async function groqModel(prefer: string[], kind: "stt" | "llm"): Promise<string> {
+  if (!groqModels) {
+    const r = await fetch(`${GROQ}/models`, { headers: { authorization: `Bearer ${await secret("groq_api_key")}` } });
+    const j = await r.json();
+    if (!r.ok) throw new Error("Groq: " + (j.error?.message ?? r.status));
+    groqModels = (j.data ?? []).filter((m: { active?: boolean }) => m.active !== false).map((m: { id: string }) => m.id);
+  }
+  const list = groqModels!;
+  const isStt = (id: string) => /whisper|transcri|speech/i.test(id);
+  return prefer.find((id) => list.includes(id)) ?? list.find((id) => (kind === "stt") === isStt(id) && !/guard|tts|playai|orpheus|compound/i.test(id)) ?? prefer[0];
+}
+
+/* ---------- speech to text: Groq Whisper, or OpenAI as an alternative ---------- */
 async function transcribe(fileId: string): Promise<string> {
   const groq = await secret("groq_api_key"), openai = await secret("openai_api_key");
   if (!groq && !openai) throw new Error("NO_STT_KEY");
@@ -48,7 +65,7 @@ async function transcribe(fileId: string): Promise<string> {
   const audio = await (await fetch(`https://api.telegram.org/file/bot${await secret("telegram_bot_token")}/${f.result.file_path}`)).blob();
   const form = new FormData();
   form.append("file", audio, "voice.ogg");
-  form.append("model", groq ? "whisper-large-v3-turbo" : "gpt-4o-mini-transcribe");
+  form.append("model", groq ? await groqModel(PREFER_STT, "stt") : "gpt-4o-mini-transcribe");
   form.append("language", "ru");
   const r = await fetch(groq ? "https://api.groq.com/openai/v1/audio/transcriptions" : "https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
@@ -60,7 +77,7 @@ async function transcribe(fileId: string): Promise<string> {
   return String(j.text ?? "").trim();
 }
 
-/* ---------- text -> records with Claude (structured output) ---------- */
+/* ---------- text -> records: Groq free tier, or Claude if an Anthropic key is set instead ---------- */
 const RECORD_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -94,17 +111,7 @@ type Rec = {
   category: string; event_type: string; time_from: string; time_to: string; health_kind: string;
 };
 
-async function extract(text: string): Promise<{ records: Rec[]; question: string }> {
-  const key = await secret("anthropic_api_key");
-  if (!key) throw new Error("NO_CLAUDE_KEY");
-  const { data: s } = await db.from("vl_sections").select("body").eq("sec", "settings").maybeSingle();
-  const rate = Number(s?.body?.rate) || 25000;
-  const client = new Anthropic({ apiKey: key });
-  const res = await client.messages.create({
-    model: "claude-opus-5-5",
-    max_tokens: 4000,
-    output_config: { effort: "low", format: { type: "json_schema", schema: RECORD_SCHEMA } },
-    system: `Ты разбираешь короткие голосовые заметки пары, которая живёт во Вьетнаме, и превращаешь их в записи для их планера.
+const prompt = (rate: number) => `Ты разбираешь короткие голосовые заметки пары, которая живёт во Вьетнаме, и превращаешь их в записи для их планера.
 Сегодня ${today()} (${weekday()}), часовой пояс ${TZ}. Относительные даты («завтра», «в пятницу», «вчера») переводи в YYYY-MM-DD.
 Типы записей:
 - expense: потраченные деньги. amount_vnd в вьетнамских донгах («150 тысяч», «150к» = 150000, «полтора миллиона» = 1500000). Суммы в долларах переводи по курсу ${rate} ₫ за $. category одна из списка. title — что купили, коротко.
@@ -112,12 +119,70 @@ async function extract(text: string): Promise<{ records: Rec[]; question: string
 - note: задача без даты («купить переходник», «продлить визу»). title — текст задачи.
 - health: визит к врачу, анализы, страховка. health_kind из списка, amount_vnd — стоимость, если есть.
 Одно сообщение может содержать несколько записей. Поля, которые не подходят к типу, оставляй пустой строкой или 0.
-Если смысл непонятен, верни пустой records и короткий уточняющий вопрос по-русски в question; иначе question пустой.`,
+Если смысл непонятен, верни пустой records и короткий уточняющий вопрос по-русски в question; иначе question пустой.`;
+
+// the free models follow the format less strictly than structured output, so every field is checked here
+const hhmm = (t: unknown) => {
+  const m = String(t ?? "").match(/^(\d{1,2})(?:[:.](\d{2}))?$/);
+  return m && +m[1] < 24 ? m[1].padStart(2, "0") + ":" + (m[2] ?? "00") : "";
+};
+// deno-lint-ignore no-explicit-any
+function normalize(o: any): { records: Rec[]; question: string } {
+  const kinds = ["expense", "event", "note", "health"];
+  // deno-lint-ignore no-explicit-any
+  const records = (Array.isArray(o?.records) ? o.records : []).map((r: any) => ({
+    kind: kinds.includes(r?.kind) ? r.kind : "note",
+    date: String(r?.date ?? ""),
+    title: String(r?.title ?? "").trim(),
+    amount_vnd: Math.max(0, Number(r?.amount_vnd) || 0),
+    category: String(r?.category ?? ""),
+    event_type: String(r?.event_type ?? ""),
+    time_from: hhmm(r?.time_from),
+    time_to: hhmm(r?.time_to),
+    health_kind: String(r?.health_kind ?? ""),
+  })).filter((r: Rec) => r.title || r.amount_vnd);
+  return { records, question: String(o?.question ?? "") };
+}
+
+async function extract(text: string): Promise<{ records: Rec[]; question: string }> {
+  const { data: s } = await db.from("vl_sections").select("body").eq("sec", "settings").maybeSingle();
+  const rate = Number(s?.body?.rate) || 25000;
+
+  // free path: Groq chat model in JSON mode
+  const groq = await secret("groq_api_key");
+  if (groq) {
+    const r = await fetch(`${GROQ}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${groq}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: await groqModel(PREFER_LLM, "llm"),
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: prompt(rate) + "\n\nОтвечай только JSON-объектом по этой JSON-схеме:\n" + JSON.stringify(RECORD_SCHEMA) },
+          { role: "user", content: text },
+        ],
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error("Groq: " + (j.error?.message ?? r.status));
+    return normalize(JSON.parse(j.choices?.[0]?.message?.content || "{}"));
+  }
+
+  // paid alternative: Claude with structured output, used only if an Anthropic key is added instead
+  const key = await secret("anthropic_api_key");
+  if (!key) throw new Error("NO_AI_KEY");
+  const client = new Anthropic({ apiKey: key });
+  const res = await client.messages.create({
+    model: "claude-opus-5-5",
+    max_tokens: 4000,
+    output_config: { effort: "low", format: { type: "json_schema", schema: RECORD_SCHEMA } },
+    system: prompt(rate),
     messages: [{ role: "user", content: text }],
   } as any);
   if (res.stop_reason === "refusal") return { records: [], question: "Не получилось разобрать сообщение, переформулируйте, пожалуйста." };
   const block = res.content.find((b) => b.type === "text");
-  return JSON.parse(block && block.type === "text" ? block.text : '{"records":[],"question":""}');
+  return normalize(JSON.parse(block && block.type === "text" ? block.text : "{}"));
 }
 
 /* ---------- save ---------- */
@@ -201,8 +266,7 @@ async function handle(u: any) {
     await say(chat, heard + "Записал:\n" + saved.map((s) => s.line).join("\n"), { reply_markup: { inline_keyboard: buttons } });
   } catch (e) {
     const msg = String((e as Error).message);
-    if (msg === "NO_STT_KEY") return say(chat, "Голосовые пока не подключены: нужен ключ сервиса распознавания речи (Groq или OpenAI). Текстом можно писать уже сейчас, если подключён ключ Claude.");
-    if (msg === "NO_CLAUDE_KEY") return say(chat, "Разбор сообщений пока не подключён: нужен ключ Anthropic API.");
+    if (msg === "NO_STT_KEY" || msg === "NO_AI_KEY") return say(chat, "Бот ещё не до конца настроен: нужен бесплатный ключ Groq. Как только он будет добавлен, я начну понимать голосовые и текст.");
     console.error(e);
     return say(chat, "Что-то пошло не так, запись не сохранена. Попробуйте ещё раз.");
   }

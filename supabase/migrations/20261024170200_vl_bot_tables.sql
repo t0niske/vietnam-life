@@ -54,5 +54,5 @@ grant execute on function public.vl_remove(text, text) to service_role;
 -- secrets are added once, outside the repo:
 --   select vault.create_secret('<token>', 'telegram_bot_token');
 --   select vault.create_secret('<random>', 'telegram_webhook_secret');
---   select vault.create_secret('<key>', 'anthropic_api_key');
---   select vault.create_secret('<key>', 'groq_api_key');   -- or openai_api_key
+--   select vault.create_secret('<key>', 'groq_api_key');        -- free: voice + parsing
+--   select vault.create_secret('<key>', 'anthropic_api_key');   -- optional paid alternative for parsing
