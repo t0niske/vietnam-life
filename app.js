@@ -96,7 +96,7 @@ const pct=(a,b)=>b?Math.min(100,Math.round(a/b*100)):0;
 
 /* ---------- state & storage ---------- */
 const S={expenses:[],utilities:[],apartments:[],goals:[],events:[],trips:[],meals:{days:[]},notes:[],health:[],useful:{},settings:{city:'Нячанг',temp:32,feels:36,rate:25000,budget:70000000,kwhPrice:3000,quote:'«Больше жизни, меньше суеты»',name:''}};
-let db=null, mode='loading', loaded=false;
+let db=null, mode='loading', loaded=false, introDone=false;
 const LS='vietnam-life-v1';
 function lsGet(){try{return JSON.parse(localStorage.getItem(LS)||'null')}catch(e){return null}}
 function lsSet(){try{localStorage.setItem(LS,JSON.stringify(S))}catch(e){}}
@@ -368,7 +368,7 @@ function calendarPage(){
   const up=S.events.filter(e=>daysTo(e.date)>=0).sort((a,b)=>(a.date+a.from)<(b.date+b.from)?-1:1);
   return `<div class="ptitle"><h2>Календарь</h2><button class="btn ghost" data-act="calPrev" aria-label="Предыдущий месяц">${ic('chevl')}</button><b>${mlabel(k)}</b><button class="btn ghost" data-act="calNext" aria-label="Следующий месяц">${ic('chev')}</button><div class="sp"><button class="btn" data-act="addEvent">${ic('plus')} Добавить</button></div></div>
   <div class="card" style="overflow-x:auto"><div class="calgrid">${['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].map(d=>`<div class="h">${d}</div>`).join('')}
-  ${cells.map(d=>{const di=iso(d);const ev=S.events.filter(e=>e.date===di);const tr=S.trips.filter(t=>t.from<=di&&di<=(t.to||t.from));return `<div class="c ${d.getMonth()!==m-1?'out':''} ${di===tIso?'today':''}" data-act="addEvent" data-date="${di}"><b>${d.getDate()}</b>${tr.map(t=>`<span class="trip">✈ ${esc(t.city)}</span>`).join('')}${ev.map(e=>`<span data-act="editEvent" data-id="${e.id}">${e.from?esc(e.from)+' ':''}${esc(e.title)}</span>`).join('')}</div>`}).join('')}</div></div>
+  ${cells.map(d=>{const di=iso(d);const ev=S.events.filter(e=>e.date===di);const tr=S.trips.filter(t=>t.from<=di&&di<=(t.to||t.from));return `<div class="c ${d.getMonth()!==m-1?'out':''} ${di===tIso?'today':''}" data-act="addEvent" data-date="${di}"><b>${d.getDate()}</b>${tr.map(t=>`<span class="ctrip">✈ ${esc(t.city)}</span>`).join('')}${ev.map(e=>`<span data-act="editEvent" data-id="${e.id}">${e.from?esc(e.from)+' ':''}${esc(e.title)}</span>`).join('')}</div>`}).join('')}</div></div>
   <div class="card"><div class="chd"><h3>Ближайшие события</h3></div>${up.map(e=>{const d=parse(e.date);const [i,l]=EVT[e.type]||EVT.other;return `<div class="ev" style="grid-template-columns:44px 26px 1fr 20px 70px"><div class="d"><b>${d.getDate()}</b><small>${WD[d.getDay()]} ${MSHORT[d.getMonth()]}</small></div><span style="color:${EVTCOL[e.type]}">${ic(i)}</span><div class="t">${esc(e.title)}<small>${l} · ${e.from?esc(e.from)+(e.to?' – '+esc(e.to):''):'На весь день'}</small></div><button class="chk ${e.done?'on':''}" data-act="toggleEvent" data-id="${e.id}" aria-label="Отметить">${e.done?ic('check'):''}</button><div class="acts"><button data-act="editEvent" data-id="${e.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delEvent" data-id="${e.id}" aria-label="Удалить">${ic('trash')}</button></div></div>`}).join('')||'<div class="empty">Нет запланированных дел</div>'}</div>`;
 }
 
@@ -427,6 +427,8 @@ function render(){
   rootEl.innerHTML=shell();
   $('#page').innerHTML=(PAGES[U.route]||home)();
   if(U.route==='utilities')kwCalc();
+  // entrance animation only once, after the data is loaded: every click re-renders the whole page
+  if(loaded&&!introDone){introDone=true;rootEl.classList.add("intro");setTimeout(()=>rootEl.classList.remove("intro"),1400)}
   if(aid&&document.getElementById(aid)){const el=document.getElementById(aid);el.focus();try{if(pos!=null)el.setSelectionRange(pos,pos)}catch(e){}}
   if(U.q)searchRender();
 }
