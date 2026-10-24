@@ -33,7 +33,7 @@ const say = (chat_id: number, text: string, extra: Record<string, unknown> = {})
   tg("sendMessage", { chat_id, text, parse_mode: "HTML", disable_web_page_preview: true, ...extra });
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-const money = (n: number) => Math.round(n).toLocaleString("ru-RU").replace(/ | /g, " ") + " ₫";
+const money = (n: number) => Math.round(n).toLocaleString("ru-RU").replace(/\u202f|\u00a0/g, "\u00a0") + "\u00a0₫";
 const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
 const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date());
 const weekday = () => new Intl.DateTimeFormat("ru-RU", { timeZone: TZ, weekday: "long" }).format(new Date());
@@ -116,8 +116,10 @@ const prompt = (rate: number) => `Ты разбираешь короткие г�
 Типы записей:
 - expense: потраченные деньги. amount_vnd в вьетнамских донгах («150 тысяч», «150к» = 150000, «полтора миллиона» = 1500000). Суммы в долларах переводи по курсу ${rate} ₫ за $. category одна из списка. title — что купили, коротко.
 - event: дело или встреча в календаре. title, date, time_from/time_to если названо время, event_type из списка.
+  Запланированный визит к врачу, стоматологу, на анализы или прививку («завтра в 10 стоматолог») — это event с event_type "health".
 - note: задача без даты («купить переходник», «продлить визу»). title — текст задачи.
-- health: визит к врачу, анализы, страховка. health_kind из списка, amount_vnd — стоимость, если есть.
+- health: уже состоявшийся визит к врачу, сданные анализы, оплаченная страховка — запись в медицинскую историю. health_kind из списка, amount_vnd — стоимость, если есть.
+  Если за медицину заплатили, добавь ещё expense с этой суммой и category "Здоровье", чтобы она попала в бюджет.
 Одно сообщение может содержать несколько записей. Поля, которые не подходят к типу, оставляй пустой строкой или 0.
 Если смысл непонятен, верни пустой records и короткий уточняющий вопрос по-русски в question; иначе question пустой.`;
 
