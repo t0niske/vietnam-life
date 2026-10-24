@@ -416,6 +416,11 @@ body{margin:0}
   .nphoto{height:160px;max-height:none}
   .donut .c b{font-size:17px}
 }
+
+/* ---------- money page: currency rates in one row on wide screens ---------- */
+.fgrid.rates{grid-template-columns:repeat(5,minmax(0,1fr))}
+@media (max-width:1100px){.fgrid.rates{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:560px){.fgrid.rates{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -445,7 +450,7 @@ body{margin:0}
         const amt=p===parts-1?left:Math.round(total/parts*(0.8+((p*13+ci)%5)/10)/10000)*10000;
         left-=amt;
         const day=cat==='Аренда'?1:1+((p*7+ci*5+back*3)%lastDay);
-        expenses.push({id:id('e'),date:iso(new Date(Y,M-back,day)),cat,amount:amt,note:notes[cat][p%notes[cat].length]});
+        expenses.push({id:id('e'),date:iso(new Date(Y,M-back,day)),cat,amount:amt,note:notes[cat][p%notes[cat].length],acc:'acc_vnd'});
       }
     });
   });
@@ -511,8 +516,22 @@ body{margin:0}
     hacks:'Пить только бутилированную воду. Носить с собой мелкие купюры. В сезон дождей — дождевик под сиденьем байка.',
     services:'Доставка еды: GrabFood, ShopeeFood. Прачечная (giặt ủi) оплачивается за кг.'
   };
-  const settings={name:'',city:'Нячанг',temp:32,feels:36,rate:25000,budget:70000000,kwhPrice:3000,quote:'«Больше жизни, меньше суеты»'};
-  return {expenses,utilities,apartments,goals,events,trips,meals,notes:notesList,health,useful,settings};
+  const settings={name:'',city:'Нячанг',temp:32,feels:36,rate:25000,rates:{RUB:290,KZT:50},budget:70000000,kwhPrice:3000,quote:'«Больше жизни, меньше суеты»'};
+  // salary in rubles, changed to tenge and then to dong every month
+  const accounts=[{id:'acc_rub',name:'Тинькофф',cur:'RUB',start:120000},{id:'acc_kzt',name:'Kaspi',cur:'KZT',start:0},{id:'acc_vnd',name:'Наличные',cur:'VND',start:3000000}];
+  const incomes=[],transfers=[];
+  for(let back=5;back>=0;back--){
+    const d=n=>iso(new Date(Y,M-back,n));
+    incomes.push({id:id('i'),date:d(5),amount:250000,cur:'RUB',vnd:250000*290,rate:290,source:'Зарплата',acc:'acc_rub'});
+    if(back%2===0)incomes.push({id:id('i'),date:d(18),amount:3000000,cur:'VND',vnd:3000000,rate:1,source:'Фриланс',acc:'acc_vnd'});
+    transfers.push({id:id('x'),date:d(7),from:'acc_rub',out:200000,to:'acc_kzt',in:1080000,fee:2000,feeCur:'RUB',feeAcc:'acc_rub',note:''});
+    transfers.push({id:id('x'),date:d(8),from:'acc_kzt',out:1050000,to:'acc_vnd',in:52500000,fee:0,feeCur:'',feeAcc:'',note:''});
+  }
+  // a weighing every two or three days for two months, slowly going down
+  const weights=[];
+  for(let back=60,k=82.4;back>=1;back-=2+(back%3===0?1:0)){k=Math.round((k-0.12+((back*7)%5-2)*0.08)*10)/10;weights.push({id:id('w'),date:iso(new Date(Y,M,today-back)),kg:k,note:back===60?'Начало':''})}
+  settings.weightGoal=75;
+  return {expenses,incomes,accounts,transfers,weights,utilities,apartments,goals,events,trips,meals,notes:notesList,health,useful,settings};
 }
 if(typeof module!=='undefined')module.exports=makeDemo;
 </script>
@@ -591,8 +610,10 @@ const UTIL=[['electricity','Электричество','bolt'],['water','Вод
 const USEFUL=[['sim','Сим-карты','sim'],['transport','Транспорт','bus'],['visa','Визы','visa'],['medicine','Медицина','heart'],['banks','Банки','bank'],['shopping','Шопинг','bag'],['hacks','Лайфхаки','spark'],['services','Сервисы','grid']];
 const GOAL_ICONS=['shield','mountain','camera','book','plane','house','heart','star','wallet'];
 const MEALT=['Завтрак','Обед','Ужин','Перекус'];
-const NAV=[['home','Главная','home'],['expenses','Расходы','receipt'],['analytics','Аналитика','chart'],['housing','Жилье','house'],['utilities','Коммуналка','plug'],['food','Питание','utensils'],['goals','Цели','target'],['calendar','Календарь','calendar'],['trips','Путешествия','plane'],['health','Здоровье','heart'],['notes','Заметки','note'],['useful','Полезное','doc'],['settings','Настройки','settings']];
-const SECS=['expenses','utilities','apartments','goals','events','trips','meals','notes','health','useful','settings'];
+// currency: symbol, default account name
+const CUR={VND:['₫','Донги'],RUB:['₽','Рубли'],KZT:['₸','Тенге'],USD:['$','Доллары'],EUR:['€','Евро'],THB:['฿','Баты']};
+const NAV=[['home','Главная','home'],['expenses','Расходы','receipt'],['money','Доходы и счета','wallet'],['analytics','Аналитика','chart'],['housing','Жилье','house'],['utilities','Коммуналка','plug'],['food','Питание','utensils'],['goals','Цели','target'],['calendar','Календарь','calendar'],['trips','Путешествия','plane'],['health','Здоровье','heart'],['fitness','Физформа','yoga'],['notes','Заметки','note'],['useful','Полезное','doc'],['settings','Настройки','settings']];
+const SECS=['expenses','incomes','accounts','transfers','utilities','apartments','goals','events','trips','meals','notes','health','weights','useful','settings'];
 
 /* ---------- helpers ---------- */
 const pad=n=>String(n).padStart(2,'0');
@@ -611,9 +632,12 @@ const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const today=()=>new Date(new Date().setHours(0,0,0,0));
 const daysTo=s=>Math.round((parse(s)-today())/864e5);
 const pct=(a,b)=>b?Math.min(100,Math.round(a/b*100)):0;
+const NB=String.fromCharCode(160);
+const cash=(n,c)=>(Number(n)||0).toLocaleString('ru-RU',{maximumFractionDigits:c==='USD'||c==='EUR'?2:0}).replace(/\s/g,NB)+NB+(CUR[c]||CUR.VND)[0];
+const rateText=n=>n.toLocaleString('ru-RU',{maximumFractionDigits:n>=100?0:n>=1?2:4}).replace(/\s/g,NB);
 
 /* ---------- state & storage ---------- */
-const S={expenses:[],utilities:[],apartments:[],goals:[],events:[],trips:[],meals:{days:[]},notes:[],health:[],useful:{},settings:{city:'Нячанг',temp:32,feels:36,rate:25000,budget:70000000,kwhPrice:3000,quote:'«Больше жизни, меньше суеты»',name:''}};
+const S={expenses:[],incomes:[],accounts:[],transfers:[],utilities:[],apartments:[],goals:[],events:[],trips:[],meals:{days:[]},notes:[],health:[],weights:[],useful:{},settings:{city:'Нячанг',temp:32,feels:36,rate:25000,budget:70000000,kwhPrice:3000,quote:'«Больше жизни, меньше суеты»',name:''}};
 let db=null, mode='loading', loaded=false, introDone=false;
 /* cloud mode (Supabase): signed-in members share one copy of the data; the Telegram bot writes there too */
 let sb=null, user=null, dbKind='';
@@ -668,11 +692,30 @@ const utilTotal=u=>UTIL.reduce((s,[k])=>s+(Number(u[k])||0),0);
 const curApt=()=>S.apartments.find(a=>a.current)||S.apartments[0];
 const nextTrip=()=>S.trips.filter(t=>daysTo(t.to||t.from)>=0).sort((a,b)=>a.from<b.from?-1:1)[0];
 const imgFor=k=>IMG[k]||'';
+// ₫ for one unit of a currency: the rate from the settings, otherwise today's rate loaded from the internet
+const setRate=c=>c==='VND'?1:c==='USD'?Number(S.settings.rate)||0:Number((S.settings.rates||{})[c])||0;
+const rateOf=c=>setRate(c)||Number(U.live[c])||0;
+function loadLive(){
+  const need=Object.keys(CUR).filter(c=>c!=='VND'&&!(c in U.live));if(!need.length)return;
+  need.forEach(c=>U.live[c]=0);
+  Promise.all(need.map(c=>fetch('https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/'+c.toLowerCase()+'.json').then(r=>r.json()).then(j=>{U.live[c]=Number((j[c.toLowerCase()]||{}).vnd)||0}).catch(()=>{}))).then(render);
+}
+// money left on each account: opening balance plus everything that came in and went out (the bot counts the same way)
+const balances=()=>S.accounts.map(a=>{
+  let bal=Number(a.start)||0;
+  S.incomes.forEach(i=>{if(i.acc===a.id)bal+=Number(i.amount)||0});
+  S.transfers.forEach(t=>{if(t.from===a.id)bal-=Number(t.out)||0;if(t.to===a.id)bal+=Number(t.in)||0;if(t.feeAcc===a.id)bal-=Number(t.fee)||0});
+  S.expenses.forEach(e=>{if(e.acc===a.id)bal-=Number(e.cur&&e.cur!=='VND'?e.orig:e.amount)||0});
+  return {acc:a,bal};
+});
+const accById=id=>S.accounts.find(a=>a.id===id);
+// the account for a currency: the first one in it, or a new one named after the currency
+function accFor(c){let a=S.accounts.find(x=>x.cur===c);if(!a){a={id:uid(),name:CUR[c][1],cur:c,start:0};S.accounts.push(a);save('accounts')}return a}
 // 3D icon (Blender render) for the dashboard stat cards, falls back to the line icon
 const ib3=(k,c)=>IMG['ic_'+k]?`<img class="ib3d" src="${IMG['ic_'+k]}" alt="">`:`<div class="ib ${c}">${ic(k)}</div>`;
 
 /* ---------- UI state ---------- */
-const U={route:'home',donutMonth:null,utilMonth:null,day:(new Date().getDay()+6)%7,expMonth:mkey(new Date()),expCat:'',anMonth:mkey(new Date()),calMonth:mkey(new Date()),q:''};
+const U={route:'home',donutMonth:null,utilMonth:null,day:(new Date().getDay()+6)%7,expMonth:mkey(new Date()),expCat:'',anMonth:mkey(new Date()),monMonth:mkey(new Date()),calMonth:mkey(new Date()),q:'',live:{}};
 try{const r=(location.hash||'').slice(1);if(NAV.find(n=>n[0]===r))U.route=r}catch(e){}
 window.addEventListener('hashchange',()=>{const r=location.hash.slice(1);if(NAV.find(n=>n[0]===r)){U.route=r;render();window.scrollTo(0,0)}});
 
@@ -815,6 +858,40 @@ function expensesPage(){
   </tbody></table></div>`:'<div class="empty">За этот месяц расходов нет. Нажмите «Добавить расход», чтобы записать первый.</div>'}</div>`;
 }
 
+/* ---------- incomes, accounts, exchanges ---------- */
+function moneyPage(){
+  loadLive();
+  const k=U.monMonth,inc=S.incomes.filter(i=>String(i.date).startsWith(k)).sort((a,b)=>a.date<b.date?1:-1);
+  const got=inc.reduce((s,i)=>s+(Number(i.vnd)||0),0),spent=sum(monthExp(k)),diff=got-spent;
+  const bals=balances(),total=bals.reduce((s,b)=>s+b.bal*rateOf(b.acc.cur),0);
+  const months=[...new Set(S.incomes.concat(S.expenses).map(e=>String(e.date).slice(0,7)).concat([mkey(new Date())]))].sort().reverse();
+  const tr=S.transfers.slice().sort((a,b)=>a.date<b.date?1:-1).slice(0,10);
+  const accN=id=>{const a=accById(id);return a?esc(a.name):'—'};
+  const accC=id=>(accById(id)||{}).cur||'VND';
+  const rateNote=c=>{const r=rateOf(c);return r?'курс '+rateText(r)+(setRate(c)?'':', сегодняшний'):'курс не задан'};
+  return `<div class="ptitle"><h2>Доходы и счета</h2><select class="sel" data-act="monMonth">${months.map(m=>`<option value="${m}" ${m===k?'selected':''}>${mlabel(m)}</option>`).join('')}</select>
+    <div class="sp"><button class="btn ghost" data-act="addAccount">${ic('plus')} Счёт</button><button class="btn ghost" data-act="addTransfer">${ic('arrow')} Обмен</button><button class="btn" data-act="addIncome">${ic('plus')} Добавить доход</button></div></div>
+  <div class="kpis"><div class="card kpi"><small>Доходы за ${mlabel(k).toLowerCase()}</small><b class="num">${vnd(got)}</b><span class="muted num">${usd(got)}</span></div>
+    <div class="card kpi"><small>Расходы за ${mlabel(k).toLowerCase()}</small><b class="num">${vnd(spent)}</b><span class="muted num">${usd(spent)}</span></div>
+    <div class="card kpi"><small>Разница</small><b class="num">${diff<0?'−':diff>0?'+':''}${vnd(Math.abs(diff))}</b><span class="${diff<0?'up':'down'}">${diff<0?'тратим больше, чем получаем':'в плюсе'}</span></div>
+    <div class="card kpi"><small>Всего на счетах</small><b class="num">${vnd(total)}</b><span class="muted">${S.accounts.length} ${plural(S.accounts.length,'счёт','счёта','счетов')}</span></div></div>
+  <div class="gridc">${bals.map(({acc:a,bal})=>`<div class="card"><div class="chd"><div class="ib g">${ic('wallet')}</div><div><h3>${esc(a.name)}</h3><div class="sub">${(CUR[a.cur]||CUR.VND)[1]} · ${esc(a.cur)}</div></div>
+    <div class="acts sp"><button data-act="editAccount" data-id="${a.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delAccount" data-id="${a.id}" aria-label="Удалить">${ic('trash')}</button></div></div>
+    <div class="num" style="font-size:20px;font-weight:700">${cash(bal,a.cur)}</div>
+    <div class="muted num" style="font-size:11.5px;margin-top:4px">${a.cur==='VND'?usd(bal):rateOf(a.cur)?'≈ '+vnd(bal*rateOf(a.cur))+' · '+rateNote(a.cur):'курс не задан'}</div></div>`).join('')||'<div class="card empty">Счетов пока нет. Добавьте счёт или запишите доход: счёт в его валюте появится сам.</div>'}</div>
+  <div class="card"><div class="chd"><h3>Доходы за ${mlabel(k).toLowerCase()}</h3></div>${inc.length?`<div class="tbl-wrap"><table><thead><tr><th>Дата</th><th>Источник</th><th>Счёт</th><th class="r">Сумма</th><th class="r">В донгах</th><th></th></tr></thead><tbody>
+  ${inc.map(i=>`<tr><td class="num">${dshort(i.date)}</td><td>${esc(i.source)}</td><td>${accN(i.acc)}</td><td class="r num"><b>${cash(i.amount,i.cur)}</b></td><td class="r num muted">${vnd(i.vnd)}</td><td><div class="acts"><button data-act="editIncome" data-id="${i.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delIncome" data-id="${i.id}" aria-label="Удалить">${ic('trash')}</button></div></td></tr>`).join('')}
+  </tbody></table></div>`:'<div class="empty">За этот месяц доходов нет. Нажмите «Добавить доход» или скажите боту: «пришла зарплата 180 тысяч рублей».</div>'}</div>
+  <div class="card"><div class="chd"><h3>Обмены и переводы</h3></div>${tr.length?`<div class="tbl-wrap"><table><thead><tr><th>Дата</th><th>Отдали</th><th>Получили</th><th class="r">Курс</th><th class="r">Комиссия</th><th></th></tr></thead><tbody>
+  ${tr.map(t=>{const fc=accC(t.from),tc=accC(t.to),k2=t.out?t.in/t.out:0;return `<tr><td class="num">${dshort(t.date)}</td><td>${cash(t.out,fc)}<br><small class="muted">${accN(t.from)}</small></td><td>${cash(t.in,tc)}<br><small class="muted">${accN(t.to)}</small></td>
+    <td class="r num">${fc===tc||!k2?'—':k2>=1?'1 '+CUR[fc][0]+' = '+rateText(k2)+' '+CUR[tc][0]:'1 '+CUR[tc][0]+' = '+rateText(1/k2)+' '+CUR[fc][0]}</td><td class="r num">${t.fee?cash(t.fee,t.feeCur||fc):'—'}</td>
+    <td><div class="acts"><button data-act="editTransfer" data-id="${t.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delTransfer" data-id="${t.id}" aria-label="Удалить">${ic('trash')}</button></div></td></tr>`}).join('')}</tbody></table></div>`:'<div class="empty">Обменов пока нет. Например: «поменял 50 тысяч рублей на тенге, получил 270 тысяч, комиссия 500 рублей».</div>'}</div>
+  <div class="card"><div class="chd"><div class="ib y">${ic('dollar')}</div><h3>Курсы валют</h3></div>
+    <form id="ratef"><div class="fgrid rates">${Object.keys(CUR).filter(c=>c!=='VND').map(c=>`<label class="field">1 ${CUR[c][0]} (${c}), ₫<input name="${c}" type="number" step="any" value="${setRate(c)||''}" placeholder="${U.live[c]?'сегодня '+rateText(U.live[c]):''}"></label>`).join('')}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px"><button class="btn" type="submit">${ic('check')} Сохранить</button><button class="btn ghost" type="button" data-act="liveRates">Подставить сегодняшние</button></div></form>
+    <p class="muted" style="font-size:11px;margin:10px 0 0">Пустое поле — сайт и бот берут сегодняшний курс из интернета. Заполненное — ваш курс, например курс обменника.</p></div>`;
+}
+
 /* ---------- analytics ---------- */
 function analyticsPage(){
   const k=U.anMonth;const cur=monthExp(k),prevL=monthExp(shiftM(k,-1));const tot=sum(cur),prev=sum(prevL);
@@ -928,6 +1005,43 @@ function healthPage(){
   return `<div class="ptitle"><h2>Здоровье</h2><div class="sp"><button class="btn" data-act="addHealth">${ic('plus')} Добавить запись</button></div></div>
   <div class="card">${l.length?`<div class="tbl-wrap"><table><thead><tr><th>Дата</th><th>Тип</th><th>Запись</th><th>Заметка</th><th class="r">Стоимость</th><th></th></tr></thead><tbody>${l.map(h=>`<tr><td>${dshort(h.date)} ${parse(h.date).getFullYear()}${daysTo(h.date)>0?' <span class="chip g">скоро</span>':''}</td><td><span class="chip">${esc(h.kind)}</span></td><td>${esc(h.title)}</td><td class="muted">${esc(h.note)}</td><td class="r num">${h.cost?vnd(h.cost):'—'}</td><td><div class="acts"><button data-act="editHealth" data-id="${h.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delHealth" data-id="${h.id}" aria-label="Удалить">${ic('trash')}</button></div></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Записей пока нет: визиты к врачу, прививки, страховка.</div>'}</div>`;
 }
+/* ---------- fitness: weight log ---------- */
+const kg=n=>(Number(n)||0).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})+NB+'кг';
+const kgDiff=n=>(n>0?'+':n<0?'−':'')+kg(Math.abs(n));
+// weight on the last weighing on or before a day
+const kgAt=(l,day)=>{const x=l.filter(w=>w.date<=day);return x.length?Number(x[x.length-1].kg):null};
+function weightChart(l){
+  if(l.length<2)return '<div class="empty">Чтобы увидеть график, нужно хотя бы два взвешивания.</div>';
+  // drawn at about the card's real width, so text and dots keep their size on any screen
+  const vw=window.innerWidth||1200,W=Math.round(Math.max(300,Math.min(1240,vw>1024?vw-330:vw-70))),H=vw<560?170:210,px=34,py=18,v=l.map(w=>Number(w.kg)),lo=Math.floor(Math.min(...v)-0.5),hi=Math.ceil(Math.max(...v)+0.5);
+  const t0=parse(l[0].date).getTime(),t1=Math.max(parse(l[l.length-1].date).getTime(),t0+864e5);
+  const x=d=>px+6+(parse(d).getTime()-t0)/(t1-t0)*(W-px-14),y=k=>py+(hi-k)/(hi-lo)*(H-2*py-14);
+  const pts=l.map(w=>x(w.date).toFixed(1)+','+y(Number(w.kg)).toFixed(1)).join(' ');
+  const grid=[hi,(hi+lo)/2,lo].map(k=>`<line x1="${px}" x2="${W-8}" y1="${y(k)}" y2="${y(k)}" stroke="#eeece5"/><text x="${px-6}" y="${y(k)+4}" text-anchor="end" font-size="11" fill="#8a8f87">${k.toLocaleString('ru-RU',{maximumFractionDigits:1})}</text>`).join('');
+  const g=Number(S.settings.weightGoal);
+  const goal=g&&g>=lo&&g<=hi?`<line x1="${px}" x2="${W-8}" y1="${y(g)}" y2="${y(g)}" stroke="#2f9e5b" stroke-dasharray="4 4"/>`:'';
+  const dl=(d,a)=>`<text x="${x(d).toFixed(1)}" y="${H-4}" text-anchor="${a}" font-size="11" fill="#8a8f87">${dshort(d)}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${grid}${goal}${dl(l[0].date,'start')}${dl(l[l.length-1].date,'end')}<polyline points="${pts}" fill="none" stroke="#2f9e5b" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>${l.map(w=>`<circle cx="${x(w.date).toFixed(1)}" cy="${y(Number(w.kg)).toFixed(1)}" r="3.2" fill="#fff" stroke="#2f9e5b" stroke-width="2"/>`).join('')}</svg>`;
+}
+function fitnessPage(){
+  const l=S.weights.slice().sort((a,b)=>a.date<b.date?-1:1),last=l[l.length-1];
+  const ago=last?-daysTo(last.date):null,day=n=>iso(new Date(today().getTime()-n*864e5));
+  const ch=n=>{const p=kgAt(l,day(n));return last&&p!=null&&l[0].date<=day(n)?Number(last.kg)-p:null};
+  const c7=ch(7),c30=ch(30),goal=Number(S.settings.weightGoal)||0;
+  const rows=l.slice().reverse().slice(0,30);
+  // green is a step towards the goal (or down, when there is no goal yet)
+  const good=d=>goal&&last&&goal>Number(last.kg)?d>0:d<0;
+  return `<div class="ptitle"><h2>Физическая форма</h2><div class="sp"><button class="btn ghost" data-act="weightGoal">${ic('target')} Цель</button><button class="btn" data-act="addWeight">${ic('plus')} Записать вес</button></div></div>
+  <div class="kpis"><div class="card kpi"><small>Текущий вес</small><b class="num">${last?kg(last.kg):'—'}</b><span class="${ago>2?'up':'muted'}">${last?(ago===0?'сегодня':ago===1?'вчера':ago+' '+plural(ago,'день','дня','дней')+' назад'):'взвешиваний пока нет'}</span></div>
+    <div class="card kpi"><small>За неделю</small><b class="num">${c7==null?'—':kgDiff(c7)}</b><span class="muted">${c7==null?'мало данных':c7<0?'вес снижается':c7>0?'вес растёт':'без изменений'}</span></div>
+    <div class="card kpi"><small>За месяц</small><b class="num">${c30==null?'—':kgDiff(c30)}</b><span class="muted">${c30==null?'мало данных':'с '+dshort(day(30))}</span></div>
+    <div class="card kpi"><small>Цель</small><b class="num">${goal?kg(goal):'—'}</b><span class="muted">${goal&&last?(Math.abs(last.kg-goal)<0.05?'цель достигнута 🎉':'осталось '+kg(Math.abs(last.kg-goal))):'нажмите «Цель», чтобы задать'}</span></div></div>
+  <div class="card"><div class="chd"><div class="ib g">${ic('chart')}</div><h3>Динамика веса</h3></div>${weightChart(l.slice(-60))}</div>
+  <div class="card"><div class="chd"><h3>Взвешивания</h3></div>${rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Дата</th><th class="r">Вес</th><th class="r">Изменение</th><th>Заметка</th><th></th></tr></thead><tbody>
+  ${rows.map(w=>{const i=l.indexOf(w),d=i>0?Number(w.kg)-Number(l[i-1].kg):null;return `<tr><td class="num">${dshort(w.date)} ${parse(w.date).getFullYear()}</td><td class="r num"><b>${kg(w.kg)}</b></td><td class="r num ${d==null||!d?'muted':good(d)?'down':'up'}">${d==null?'—':kgDiff(d)}</td><td class="muted">${esc(w.note)}</td><td><div class="acts"><button data-act="editWeight" data-id="${w.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delWeight" data-id="${w.id}" aria-label="Удалить">${ic('trash')}</button></div></td></tr>`}).join('')}
+  </tbody></table></div>`:'<div class="empty">Запишите первый вес кнопкой выше или скажите боту: «вес 78,4».</div>'}
+  <p class="muted" style="font-size:11px;margin:12px 0 0">Telegram-бот напомнит взвеситься, если записей не было больше двух дней.</p></div>`;
+}
 function notesPage(){
   return `<div class="ptitle"><h2>Заметки</h2></div>
   <div class="card"><div style="display:flex;gap:8px;margin-bottom:14px"><input class="sel" id="newnote" style="flex:1;height:36px;min-width:0" placeholder="Что нужно сделать?"><button class="btn" data-act="addNote">${ic('plus')} Добавить</button></div>
@@ -943,7 +1057,7 @@ function accountCard(){
   <div class="full"><button class="btn" type="submit">${ic('arrow')} Получить ссылку для входа</button></div></form>
   <p class="muted" style="font-size:11.5px;margin:10px 0 0">На почту придёт ссылка: откройте её на этом устройстве. Войти могут только адреса из списка участников.</p></div>`;
   return `<div class="card"><div class="chd"><div class="ib g">${ic('check')}</div><div><h3>Вы вошли</h3><div class="sub">${esc(user.email)}</div></div><button class="btn ghost sp" data-act="logout">Выйти</button></div>
-  <p style="font-size:12.5px;margin:0 0 10px">Telegram-бот <b>@${VL_SUPABASE.bot}</b> принимает голосовые и текст и сам добавляет расходы, события и заметки.</p>
+  <p style="font-size:12.5px;margin:0 0 10px">Telegram-бот <b>@${VL_SUPABASE.bot}</b> принимает голосовые и текст, сам заполняет все разделы сайта, напоминает о делах и присылает отчёты.</p>
   <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-act="tgLink">${ic('plane')} Подключить Telegram</button><button class="btn ghost" data-act="pushLocal">Перенести данные из этого браузера</button></div>
   <div id="tgbox"></div></div>`;
 }
@@ -968,7 +1082,7 @@ function settingsPage(){
 }
 
 /* ---------- render ---------- */
-const PAGES={home,expenses:expensesPage,analytics:analyticsPage,housing:housingPage,utilities:utilitiesPage,food:foodPage,goals:goalsPage,calendar:calendarPage,trips:tripsPage,health:healthPage,notes:notesPage,useful:usefulPage,settings:settingsPage};
+const PAGES={home,expenses:expensesPage,money:moneyPage,fitness:fitnessPage,analytics:analyticsPage,housing:housingPage,utilities:utilitiesPage,food:foodPage,goals:goalsPage,calendar:calendarPage,trips:tripsPage,health:healthPage,notes:notesPage,useful:usefulPage,settings:settingsPage};
 let rootEl;
 function render(){
   if(!rootEl)return;
@@ -989,6 +1103,7 @@ function searchRender(){
   S.expenses.forEach(e=>{if((e.note+' '+e.cat).toLowerCase().includes(q))r.push(['expenses',e.note||e.cat,dshort(e.date)+' · '+vnd(e.amount)])});
   S.events.forEach(e=>{if(e.title.toLowerCase().includes(q))r.push(['calendar',e.title,dshort(e.date)])});
   S.notes.forEach(e=>{if(e.text.toLowerCase().includes(q))r.push(['notes',e.text,'Заметка'])});
+  S.incomes.forEach(e=>{if(String(e.source).toLowerCase().includes(q))r.push(['money',e.source,dshort(e.date)+' · '+cash(e.amount,e.cur)])});
   S.goals.forEach(e=>{if(e.title.toLowerCase().includes(q))r.push(['goals',e.title,'Цель'])});
   S.trips.forEach(e=>{if(e.city.toLowerCase().includes(q))r.push(['trips',e.city,'Поездка'])});
   S.apartments.forEach(e=>{if((e.city+' '+e.name).toLowerCase().includes(q))r.push(['housing',e.city+', '+e.name,'Квартира'])});
@@ -1024,8 +1139,18 @@ const F={
  goal:[{k:'title',l:'Цель',req:1,full:1},{k:'saved',l:'Накоплено, $',t:'number'},{k:'target',l:'Нужно, $',t:'number'},{k:'color',l:'Цвет',t:'select',o:[['#2f9e5b','Зелёный'],['#e8484a','Красный'],['#f5a63c','Оранжевый'],['#4c7fe0','Синий'],['#6b62d9','Фиолетовый']]},{k:'icon',l:'Иконка',t:'select',o:GOAL_ICONS},{k:'featured',l:'Показывать на главной',t:'check',full:1}],
  event:[{k:'title',l:'Название',req:1,full:1},{k:'date',l:'Дата',t:'date',req:1},{k:'type',l:'Тип',t:'select',o:Object.entries(EVT).map(([k,v])=>[k,v[1]])},{k:'from',l:'Начало (пусто — весь день)',t:'time'},{k:'to',l:'Конец',t:'time'}],
  trip:[{k:'city',l:'Куда',req:1,full:1},{k:'from',l:'С',t:'date',req:1},{k:'to',l:'По',t:'date',req:1},{k:'budget',l:'Бюджет, ₫',t:'number'},{k:'img',l:'Фото',t:'select',o:[['trip1','Горы и море'],['trip2','Закат'],['trip3','Скалы'],['danang_card','Пляж']]},{k:'note',l:'Заметки',full:1}],
- health:[{k:'date',l:'Дата',t:'date',req:1},{k:'kind',l:'Тип',t:'select',o:['Врач','Анализы','Прививка','Страховка','Спорт','Другое']},{k:'title',l:'Запись',req:1,full:1},{k:'cost',l:'Стоимость, ₫',t:'number'},{k:'note',l:'Заметка'}]
+ health:[{k:'date',l:'Дата',t:'date',req:1},{k:'kind',l:'Тип',t:'select',o:['Врач','Анализы','Прививка','Страховка','Спорт','Другое']},{k:'title',l:'Запись',req:1,full:1},{k:'cost',l:'Стоимость, ₫',t:'number'},{k:'note',l:'Заметка'}],
+ weight:[{k:'date',l:'Дата',t:'date',req:1},{k:'kg',l:'Вес, кг',t:'number',req:1},{k:'note',l:'Заметка',full:1}],
+ account:[{k:'name',l:'Название',req:1,full:1},{k:'cur',l:'Валюта',t:'select',o:Object.keys(CUR).map(c=>[c,CUR[c][1]+' '+CUR[c][0]])},{k:'start',l:'Начальный остаток',t:'number'}]
 };
+// lists of accounts change, so these forms are built when opened
+const accOpts=(c,none)=>(none?[['',none]]:[]).concat(S.accounts.filter(a=>!c||a.cur===c).map(a=>[a.id,a.name+' · '+(CUR[a.cur]||CUR.VND)[0]]));
+const incomeF=()=>[{k:'date',l:'Дата',t:'date',req:1},{k:'amount',l:'Сумма',t:'number',req:1},{k:'cur',l:'Валюта',t:'select',o:Object.keys(CUR).map(c=>[c,CUR[c][1]+' '+CUR[c][0]])},{k:'acc',l:'Счёт',t:'select',o:accOpts('','Счёт в этой валюте')},{k:'source',l:'Источник',full:1}];
+const transferF=()=>[{k:'date',l:'Дата',t:'date',req:1},{k:'note',l:'Заметка'},{k:'from',l:'Откуда',t:'select',o:accOpts()},{k:'out',l:'Отдали',t:'number',req:1},{k:'to',l:'Куда',t:'select',o:accOpts()},{k:'in',l:'Получили',t:'number',req:1},{k:'fee',l:'Комиссия (в валюте «откуда»)',t:'number',full:1}];
+const expenseF=()=>S.accounts.some(a=>a.cur==='VND')?F.expense.concat([{k:'acc',l:'Счёт',t:'select',o:accOpts('VND','Не указан'),full:1}]):F.expense;
+// a dong amount for an income: the rate from the settings, otherwise today's rate
+const incomeVnd=o=>{const r=rateOf(o.cur);return {...o,acc:o.acc||accFor(o.cur).id,rate:r,vnd:Math.round((Number(o.amount)||0)*r)}};
+const transferFee=o=>({...o,feeCur:o.fee?(accById(o.from)||{}).cur||'':'',feeAcc:o.fee?o.from:''});
 
 /* ---------- actions ---------- */
 function act(a,el){
@@ -1033,8 +1158,25 @@ function act(a,el){
   switch(a){
   case 'day':U.day=+el.dataset.i;render();break;
   case 'meal':{const d=+el.dataset.d,j=+el.dataset.j;const m=S.meals.days[d].items[j];form(MEALT[j]+', '+S.meals.days[d].day,[{k:'name',l:'Блюдо',req:1,full:1},{k:'desc',l:'Дополнение',full:1},{k:'kcal',l:'Калории',t:'number'}],m,o=>{S.meals.days[d].items[j]=o;save('meals')});break}
-  case 'addExpense':form('Новый расход',F.expense,{date:iso(new Date()),cat:U.expCat||'Питание'},o=>{upsert('expenses',{id:uid(),...o});toast('Расход добавлен')});break;
-  case 'editExpense':{const e=find('expenses',id);form('Расход',F.expense,e,o=>upsert('expenses',{...e,...o}),()=>remove('expenses',id));break}
+  case 'addExpense':form('Новый расход',expenseF(),{date:iso(new Date()),cat:U.expCat||'Питание'},o=>{upsert('expenses',{id:uid(),...o});toast('Расход добавлен')});break;
+  case 'editExpense':{const e=find('expenses',id);form('Расход',expenseF(),e,o=>upsert('expenses',{...e,...o}),()=>remove('expenses',id));break}
+  case 'addIncome':form('Новый доход',incomeF(),{date:iso(new Date()),cur:'RUB',source:'Зарплата'},o=>{if(o.cur!=='VND'&&!rateOf(o.cur)){toast('Курс '+o.cur+' неизвестен: задайте его в блоке «Курсы валют»');return}upsert('incomes',{id:uid(),...incomeVnd(o)});toast('Доход добавлен')});break;
+  // an edited income keeps the rate it was saved with, unless its currency changed
+  case 'editIncome':{const e=find('incomes',id);form('Доход',incomeF(),e,o=>{const v=incomeVnd(o);if(o.cur===e.cur&&e.rate){v.rate=e.rate;v.vnd=Math.round((Number(o.amount)||0)*e.rate)}upsert('incomes',{...e,...v})},()=>remove('incomes',id));break}
+  case 'delIncome':remove('incomes',id);toast('Удалено');break;
+  // one weighing per day: a second one the same day replaces it
+  case 'addWeight':{const l=S.weights;form('Вес',F.weight,{date:iso(new Date()),kg:l.length?l.slice().sort((a,b)=>a.date<b.date?1:-1)[0].kg:''},o=>{const ex=l.find(w=>w.date===o.date);upsert('weights',{id:ex?ex.id:uid(),...o});toast('Вес записан')});break}
+  case 'editWeight':{const e=find('weights',id);form('Вес',F.weight,e,o=>upsert('weights',{...e,...o}),()=>remove('weights',id));break}
+  case 'delWeight':remove('weights',id);break;
+  case 'weightGoal':form('Цель по весу',[{k:'weightGoal',l:'Желаемый вес, кг',t:'number',full:1}],{weightGoal:S.settings.weightGoal||''},o=>{S.settings={...S.settings,weightGoal:o.weightGoal};save('settings')});break;
+  case 'addAccount':form('Новый счёт',F.account,{cur:'VND',start:0},o=>upsert('accounts',{id:uid(),...o}));break;
+  case 'editAccount':{const e=find('accounts',id);form('Счёт',F.account,e,o=>upsert('accounts',{...e,...o}),()=>remove('accounts',id));break}
+  case 'delAccount':remove('accounts',id);break;
+  case 'addTransfer':if(!S.accounts.length){toast('Сначала добавьте счета, между которыми был обмен');break}
+    form('Обмен или перевод',transferF(),{date:iso(new Date()),from:S.accounts[0].id,to:(S.accounts[1]||S.accounts[0]).id},o=>upsert('transfers',{id:uid(),...transferFee(o)}));break;
+  case 'editTransfer':{const e=find('transfers',id);form('Обмен или перевод',transferF(),e,o=>upsert('transfers',{...e,...transferFee(o)}),()=>remove('transfers',id));break}
+  case 'delTransfer':remove('transfers',id);break;
+  case 'liveRates':{const f=$('#ratef');Object.keys(CUR).forEach(c=>{const el=f&&f.elements[c];if(el&&U.live[c])el.value=Math.round(U.live[c]*100)/100});toast(Object.values(U.live).some(Boolean)?'Подставлены сегодняшние курсы, нажмите «Сохранить»':'Курсы ещё загружаются, попробуйте через секунду');break}
   case 'delExpense':remove('expenses',id);toast('Удалено');break;
   case 'addApt':form('Новая квартира',F.apt,{img:'apt1',rooms:1,from:iso(new Date())},o=>{if(o.current)S.apartments.forEach(x=>x.current=false);upsert('apartments',{id:uid(),...o})});break;
   case 'editApt':{const e=find('apartments',id);form('Квартира',F.apt,e,o=>{if(o.current)S.apartments.forEach(x=>{if(x.id!==id)x.current=false});upsert('apartments',{...e,...o})},()=>remove('apartments',id));break}
@@ -1075,7 +1217,7 @@ function act(a,el){
   case 'exportJson':{const b=$('#jsonbox');b.hidden=false;b.value=JSON.stringify(S,null,1);b.select();try{navigator.clipboard.writeText(b.value).then(()=>toast('JSON скопирован'),()=>toast('Выделите и скопируйте текст'))}catch(e){}break}
   case 'importJson':{const b=$('#jsonbox');if(b.hidden||!b.value.trim()){b.hidden=false;b.value='';b.focus();toast('Вставьте JSON и нажмите «Импорт» ещё раз');break}try{const d=JSON.parse(b.value);SECS.forEach(s=>{if(d[s]!=null){S[s]=d[s];save(s)}});toast('Данные импортированы')}catch(e){toast('Это не похоже на корректный JSON')}break}
   case 'resetDemo':confirmBox('Заменить все данные примером из макета?',()=>loadDemo());break;
-  case 'clearAll':confirmBox('Удалить все записи? Настройки останутся.',()=>{['expenses','utilities','apartments','goals','events','trips','notes','health'].forEach(s=>{S[s]=[];save(s)});toast('Данные очищены')});break;
+  case 'clearAll':confirmBox('Удалить все записи? Настройки останутся.',()=>{['expenses','incomes','accounts','transfers','utilities','apartments','goals','events','trips','notes','health','weights'].forEach(s=>{S[s]=[];save(s)});toast('Данные очищены')});break;
   }
 }
 function confirmBox(msg,fn){const c=$('#confirm');c.innerHTML=`<div style="margin-top:12px;padding:12px;border-radius:10px;background:#fdf1f0;font-size:12.5px">${esc(msg)}<div style="display:flex;gap:8px;margin-top:8px"><button class="btn danger" id="cy">Да</button><button class="btn ghost" id="cn">Отмена</button></div></div>`;$('#cy').onclick=()=>{c.innerHTML='';fn()};$('#cn').onclick=()=>c.innerHTML=''}
@@ -1091,12 +1233,17 @@ function bind(){
     e.stopPropagation();
     act(el.dataset.act,el);
   });
+  // the weight chart is drawn for the screen width
+  let rz;window.addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(()=>{if(U.route==='fitness')render()},200)});
   rootEl.addEventListener('change',e=>{const el=e.target;const a=el.dataset&&el.dataset.act;if(!a)return;if(a in U){U[a]=el.value;render()}});
   rootEl.addEventListener('input',e=>{if(e.target.id==='q'){U.q=e.target.value;searchRender()}if(/^kw/.test(e.target.id))kwCalc()});
   rootEl.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='newnote'){e.preventDefault();act('addNote',e.target)}if(e.key==='Enter'&&e.target.id&&e.target.id.startsWith('ck-')){e.preventDefault();act('addCheck',{dataset:{id:e.target.id.slice(3)}})}});
   rootEl.addEventListener('submit',e=>{if(e.target.id==='loginf'){e.preventDefault();const email=e.target.email.value.trim();const btn=e.target.querySelector('button');btn.disabled=true;
       sb.auth.signInWithOtp({email,options:{emailRedirectTo:location.origin+location.pathname}}).then(({error})=>{btn.disabled=false;toast(error?(/closed|закрыта|Database error/i.test(error.message)?'Этого адреса нет в списке участников':'Ошибка: '+error.message):'Ссылка для входа отправлена на '+email)});return}
-    if(e.target.id==='setf'){e.preventDefault();const fd=new FormData(e.target);const o={};fd.forEach((v,k)=>o[k]=['temp','feels','rate','budget','kwhPrice'].includes(k)?Number(v):v);S.settings={...S.settings,...o};save('settings');toast('Сохранено')}});
+    if(e.target.id==='setf'){e.preventDefault();const fd=new FormData(e.target);const o={};fd.forEach((v,k)=>o[k]=['temp','feels','rate','budget','kwhPrice'].includes(k)?Number(v):v);S.settings={...S.settings,...o};save('settings');toast('Сохранено')}
+    // currency rates: the dollar is the old "rate" setting, the rest live in settings.rates; an empty field means today's rate
+    if(e.target.id==='ratef'){e.preventDefault();const fd=new FormData(e.target);const rates={};fd.forEach((v,k)=>{if(k!=='USD'&&Number(v))rates[k]=Number(v)});
+      S.settings={...S.settings,rates,rate:Number(fd.get('USD'))||S.settings.rate};save('settings');toast('Курсы сохранены')}});
 }
 document.addEventListener('DOMContentLoaded',()=>{rootEl=document.getElementById('root');bind();init()});
 if(document.readyState!=='loading'){rootEl=document.getElementById('root');bind();init()}

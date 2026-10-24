@@ -21,7 +21,7 @@ function makeDemo(now){
         const amt=p===parts-1?left:Math.round(total/parts*(0.8+((p*13+ci)%5)/10)/10000)*10000;
         left-=amt;
         const day=cat==='Аренда'?1:1+((p*7+ci*5+back*3)%lastDay);
-        expenses.push({id:id('e'),date:iso(new Date(Y,M-back,day)),cat,amount:amt,note:notes[cat][p%notes[cat].length]});
+        expenses.push({id:id('e'),date:iso(new Date(Y,M-back,day)),cat,amount:amt,note:notes[cat][p%notes[cat].length],acc:'acc_vnd'});
       }
     });
   });
@@ -87,7 +87,21 @@ function makeDemo(now){
     hacks:'Пить только бутилированную воду. Носить с собой мелкие купюры. В сезон дождей — дождевик под сиденьем байка.',
     services:'Доставка еды: GrabFood, ShopeeFood. Прачечная (giặt ủi) оплачивается за кг.'
   };
-  const settings={name:'',city:'Нячанг',temp:32,feels:36,rate:25000,budget:70000000,kwhPrice:3000,quote:'«Больше жизни, меньше суеты»'};
-  return {expenses,utilities,apartments,goals,events,trips,meals,notes:notesList,health,useful,settings};
+  const settings={name:'',city:'Нячанг',temp:32,feels:36,rate:25000,rates:{RUB:290,KZT:50},budget:70000000,kwhPrice:3000,quote:'«Больше жизни, меньше суеты»'};
+  // salary in rubles, changed to tenge and then to dong every month
+  const accounts=[{id:'acc_rub',name:'Тинькофф',cur:'RUB',start:120000},{id:'acc_kzt',name:'Kaspi',cur:'KZT',start:0},{id:'acc_vnd',name:'Наличные',cur:'VND',start:3000000}];
+  const incomes=[],transfers=[];
+  for(let back=5;back>=0;back--){
+    const d=n=>iso(new Date(Y,M-back,n));
+    incomes.push({id:id('i'),date:d(5),amount:250000,cur:'RUB',vnd:250000*290,rate:290,source:'Зарплата',acc:'acc_rub'});
+    if(back%2===0)incomes.push({id:id('i'),date:d(18),amount:3000000,cur:'VND',vnd:3000000,rate:1,source:'Фриланс',acc:'acc_vnd'});
+    transfers.push({id:id('x'),date:d(7),from:'acc_rub',out:200000,to:'acc_kzt',in:1080000,fee:2000,feeCur:'RUB',feeAcc:'acc_rub',note:''});
+    transfers.push({id:id('x'),date:d(8),from:'acc_kzt',out:1050000,to:'acc_vnd',in:52500000,fee:0,feeCur:'',feeAcc:'',note:''});
+  }
+  // a weighing every two or three days for two months, slowly going down
+  const weights=[];
+  for(let back=60,k=82.4;back>=1;back-=2+(back%3===0?1:0)){k=Math.round((k-0.12+((back*7)%5-2)*0.08)*10)/10;weights.push({id:id('w'),date:iso(new Date(Y,M,today-back)),kg:k,note:back===60?'Начало':''})}
+  settings.weightGoal=75;
+  return {expenses,incomes,accounts,transfers,weights,utilities,apartments,goals,events,trips,meals,notes:notesList,health,useful,settings};
 }
 if(typeof module!=='undefined')module.exports=makeDemo;
