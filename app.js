@@ -155,6 +155,9 @@ const utilTotal=u=>UTIL.reduce((s,[k])=>s+(Number(u[k])||0),0);
 const curApt=()=>S.apartments.find(a=>a.current)||S.apartments[0];
 const nextTrip=()=>S.trips.filter(t=>daysTo(t.to||t.from)>=0).sort((a,b)=>a.from<b.from?-1:1)[0];
 const imgFor=k=>IMG[k]||'';
+// an apartment with its own photos shows the first one as the cover
+const aptPhotos=a=>(a.photos||[]).filter(k=>IMG[k]);
+const aptCover=(a,def)=>imgFor(aptPhotos(a)[0]||a.img||def);
 // ₫ for one unit of a currency: the rate from the settings, otherwise today's rate loaded from the internet
 const setRate=c=>c==='VND'?1:c==='USD'?Number(S.settings.rate)||0:Number((S.settings.rates||{})[c])||0;
 const rateOf=c=>setRate(c)||Number(U.live[c])||0;
@@ -267,7 +270,7 @@ function home(){
       <div><div class="legend">${dlist.length?dlist.map(c=>`<div><i style="background:${c[2]}"></i><span>${esc(c[0])}</span><span class="num">${pct(c[1],dtot)}%</span><span class="v num">${vnd(c[1])}</span></div>`).join(''):'<span class="muted">Нет расходов за этот месяц</span>'}</div>
       <div style="text-align:right;margin-top:16px"><a class="link" href="#expenses">Все категории ${ic('arrow')}</a></div></div></div></div>
     <div class="card"><div class="chd"><div class="ib g">${ic('house')}</div><div><h3>Жилье</h3><div class="sub">История наших квартир</div></div></div>
-      ${a?`<div class="apt-photo"><img src="${imgFor(a.img||'apt_main')}" alt="">${a.current?'<span class="tag">Текущая</span>':''}<div class="info"><b>${esc(a.city)}, ${esc(a.name)}</b><div class="p num">${vnd(a.price)} / месяц</div><div class="apt-meta"><span>${ic('bed')}${a.rooms} ${plural(a.rooms,'комната','комнаты','комнат')}</span><span>${ic('area')}${a.area} м²</span><span>${ic('eye')}${esc(a.view)}</span></div></div></div>
+      ${a?`<div class="apt-photo"><img src="${aptCover(a,'apt_main')}" alt="">${a.current?'<span class="tag">Текущая</span>':''}<div class="info"><b>${esc(a.city)}, ${esc(a.name)}</b><div class="p num">${vnd(a.price)} / месяц</div><div class="apt-meta"><span>${ic('bed')}${a.rooms} ${plural(a.rooms,'комната','комнаты','комнат')}</span><span>${ic('area')}${a.area} м²</span><span>${ic('eye')}${esc(a.view)}</span></div></div></div>
       <div class="thumbs">${['apt1','apt2','apt3','apt4'].map(k=>`<img src="${imgFor(k)}" alt="">`).join('')}</div>`:'<div class="empty">Добавьте квартиру в разделе «Жилье»</div>'}
       <div style="text-align:right"><a class="link" href="#housing">Все квартиры ${ic('arrow')}</a></div></div>
     <div class="card"><div class="chd"><div class="ib p">${ic('bolt')}</div><h3>Коммуналка</h3><div class="sp"><select class="sel" data-act="utilMonth" aria-label="Месяц">${us.slice().reverse().map(u=>`<option value="${u.month}" ${u.month===um?'selected':''}>${mlabel(u.month)}</option>`).join('')||'<option>Нет данных</option>'}</select></div></div>
@@ -386,14 +389,29 @@ function housingPage(){
   <div class="card kpi"><small>Квартир за всё время</small><b class="num">${list.length}</b></div>
   <div class="card kpi"><small>Всего на аренду</small><b class="num">${vnd(paid)}</b><span class="muted num">${usd(paid)}</span></div>
   <div class="card kpi"><small>Аренда + коммуналка в месяц</small><b class="num">${vnd((a?a.price:0)+(S.utilities.length?utilTotal(S.utilities.slice().sort((x,y)=>x.month<y.month?1:-1)[0]):0))}</b><span class="muted">по последнему счёту</span></div></div>
-  <div class="gridc">${list.map(a=>`<div class="card apt-card"><img class="cover" src="${imgFor(a.img||'apt1')}" alt="">
+  <div class="gridc">${list.map(a=>{const ph=aptPhotos(a);return `<div class="card apt-card">${ph.length?`<button class="cover-btn" data-act="gallery" data-id="${a.id}" data-i="0" aria-label="Открыть фото"><img class="cover" src="${imgFor(ph[0])}" alt=""><span class="gcount">${ph.length} фото</span></button>
+    ${ph.length>1?`<div class="gthumbs">${ph.slice(1,6).map((k,j)=>`<button data-act="gallery" data-id="${a.id}" data-i="${j+1}" aria-label="Фото ${j+2}"><img src="${imgFor(k)}" alt="" loading="lazy">${j===4&&ph.length>6?`<em>+${ph.length-6}</em>`:''}</button>`).join('')}</div>`:''}`:`<img class="cover" src="${imgFor(a.img||'apt1')}" alt="">`}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px"><b style="font-size:14px">${esc(a.city)}, ${esc(a.name)}</b>${a.current?'<span class="chip g">Текущая</span>':''}</div>
     <div class="num" style="font-size:16px;font-weight:700;margin:4px 0">${vnd(a.price)} <span class="muted" style="font-size:11px;font-weight:400">/ месяц</span></div>
     <div class="apt-meta"><span>${ic('bed')}${a.rooms} комн.</span><span>${ic('area')}${a.area} м²</span><span>${ic('eye')}${esc(a.view)}</span></div>
     <div style="font-size:11.5px;color:#555;margin-top:8px">${a.from?dshort(a.from)+' '+parse(a.from).getFullYear():''} – ${a.to?dshort(a.to)+' '+parse(a.to).getFullYear():'сейчас'} · ${months(a)} мес. · всего ${vnd(months(a)*a.price)}</div>
     ${a.deposit?`<div style="font-size:11.5px;color:#555">Депозит: ${vnd(a.deposit)}</div>`:''}
     ${a.note?`<div style="font-size:12px;margin-top:6px">${esc(a.note)}</div>`:''}
-    <div class="acts" style="margin-top:8px"><button data-act="editApt" data-id="${a.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delApt" data-id="${a.id}" aria-label="Удалить">${ic('trash')}</button></div></div>`).join('')||'<div class="card empty">Квартир пока нет</div>'}</div>`;
+    <div class="acts" style="margin-top:8px"><button data-act="editApt" data-id="${a.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delApt" data-id="${a.id}" aria-label="Удалить">${ic('trash')}</button></div></div>`}).join('')||'<div class="card empty">Квартир пока нет</div>'}</div>`;
+}
+// full-screen photo viewer: arrows, swipe, Esc
+function gallery(list,i){
+  const bg=document.createElement('div');bg.className='lb';
+  const show=()=>{bg.innerHTML=`<img src="${imgFor(list[i])}" alt=""><button class="nav prev" data-g="-1" aria-label="Назад">${ic('chevl')}</button><button class="nav next" data-g="1" aria-label="Вперёд">${ic('chev')}</button><button class="close" data-g="x" aria-label="Закрыть">${ic('x')}</button><span class="cnt">${i+1} / ${list.length}</span>`};
+  const go=d=>{i=(i+d+list.length)%list.length;show()};
+  const close=()=>{bg.remove();document.removeEventListener('keydown',key)};
+  const key=e=>{if(e.key==='Escape')close();if(e.key==='ArrowLeft')go(-1);if(e.key==='ArrowRight')go(1)};
+  let x0=null;
+  bg.addEventListener('touchstart',e=>{x0=e.touches[0].clientX},{passive:true});
+  bg.addEventListener('touchend',e=>{if(x0==null)return;const dx=e.changedTouches[0].clientX-x0;x0=null;if(Math.abs(dx)>40)go(dx<0?1:-1)});
+  bg.addEventListener('click',e=>{const b=e.target.closest('[data-g]');if(b){b.dataset.g==='x'?close():go(+b.dataset.g);return}if(e.target===bg)close()});
+  document.addEventListener('keydown',key);
+  show();document.body.appendChild(bg);
 }
 
 /* ---------- utilities ---------- */
@@ -597,7 +615,7 @@ const find=(sec,id)=>S[sec].find(x=>x.id===id);
 
 const F={
  expense:[{k:'date',l:'Дата',t:'date',req:1},{k:'amount',l:'Сумма, ₫',t:'number',req:1},{k:'cat',l:'Категория',t:'select',o:CATS.map(c=>c[0]),full:1},{k:'note',l:'Описание',full:1}],
- apt:[{k:'city',l:'Город',req:1},{k:'name',l:'Название / район',req:1},{k:'price',l:'Аренда в месяц, ₫',t:'number'},{k:'deposit',l:'Депозит, ₫',t:'number'},{k:'rooms',l:'Комнат',t:'number'},{k:'area',l:'Площадь, м²',t:'number'},{k:'view',l:'Вид',full:1},{k:'from',l:'Заехали',t:'date'},{k:'to',l:'Выехали',t:'date'},{k:'img',l:'Фото',t:'select',o:[['apt_main','Фото 1'],['apt1','Фото 2'],['apt2','Фото 3'],['apt3','Фото 4'],['apt4','Фото 5']]},{k:'current',l:'Живём сейчас',t:'check'},{k:'note',l:'Заметка',full:1}],
+ apt:[{k:'city',l:'Город',req:1},{k:'name',l:'Название / район',req:1},{k:'price',l:'Аренда в месяц, ₫',t:'number'},{k:'deposit',l:'Депозит, ₫',t:'number'},{k:'rooms',l:'Комнат',t:'number'},{k:'area',l:'Площадь, м²',t:'number'},{k:'view',l:'Вид',full:1},{k:'from',l:'Заехали',t:'date'},{k:'to',l:'Выехали',t:'date'},{k:'img',l:'Фото',t:'select',o:[['home1','Наша квартира'],['apt_main','Фото 1'],['apt1','Фото 2'],['apt2','Фото 3'],['apt3','Фото 4'],['apt4','Фото 5']]},{k:'current',l:'Живём сейчас',t:'check'},{k:'note',l:'Заметка',full:1}],
  util:[{k:'month',l:'Месяц',t:'month',req:1},{k:'kwh',l:'Электричество, кВт·ч',t:'number'},...UTIL.map(([k,l])=>({k,l:l+', ₫',t:'number'}))],
  goal:[{k:'title',l:'Цель',req:1,full:1},{k:'saved',l:'Накоплено, $',t:'number'},{k:'target',l:'Нужно, $',t:'number'},{k:'color',l:'Цвет',t:'select',o:[['#2f9e5b','Зелёный'],['#e8484a','Красный'],['#f5a63c','Оранжевый'],['#4c7fe0','Синий'],['#6b62d9','Фиолетовый']]},{k:'icon',l:'Иконка',t:'select',o:GOAL_ICONS},{k:'featured',l:'Показывать на главной',t:'check',full:1}],
  event:[{k:'title',l:'Название',req:1,full:1},{k:'date',l:'Дата',t:'date',req:1},{k:'type',l:'Тип',t:'select',o:Object.entries(EVT).map(([k,v])=>[k,v[1]])},{k:'from',l:'Начало (пусто — весь день)',t:'time'},{k:'to',l:'Конец',t:'time'}],
@@ -644,6 +662,7 @@ function act(a,el){
   case 'addApt':form('Новая квартира',F.apt,{img:'apt1',rooms:1,from:iso(new Date())},o=>{if(o.current)S.apartments.forEach(x=>x.current=false);upsert('apartments',{id:uid(),...o})});break;
   case 'editApt':{const e=find('apartments',id);form('Квартира',F.apt,e,o=>{if(o.current)S.apartments.forEach(x=>{if(x.id!==id)x.current=false});upsert('apartments',{...e,...o})},()=>remove('apartments',id));break}
   case 'delApt':remove('apartments',id);break;
+  case 'gallery':{const a=find('apartments',id);if(a)gallery(aptPhotos(a),+el.dataset.i||0);break}
   case 'addUtil':form('Коммуналка за месяц',F.util,{month:mkey(new Date()),internet:250000,garbage:120000},o=>{const ex=S.utilities.find(u=>u.month===o.month);upsert('utilities',{id:ex?ex.id:uid(),...o})});break;
   case 'editUtil':{const e=find('utilities',id);form('Коммуналка',F.util,e,o=>upsert('utilities',{...e,...o}),()=>remove('utilities',id));break}
   case 'delUtil':remove('utilities',id);break;
