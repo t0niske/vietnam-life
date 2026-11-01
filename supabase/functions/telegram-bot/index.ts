@@ -202,6 +202,7 @@ type Ctx = {
   usd: number; budget: number; budgetGross: number; savePct: number; budgetSrc: string; kwhPrice: number; rates: Record<string, number>;
   goals: Item[]; notes: Item[]; events: Item[]; trips: Item[]; apartments: Item[]; expenses: Item[]; incomes: Item[]; transfers: Item[]; accounts: Item[];
   weights: Item[]; utilities: Item[]; settings: Item;
+  profile: Item; activities: Item[]; meals: Item[]; shopping: Item[]; recipes: Item[];
 };
 async function context(): Promise<Ctx> {
   const { data } = await db.from("vl_sections").select("sec, body");
@@ -213,6 +214,8 @@ async function context(): Promise<Ctx> {
     goals: list("goals"), notes: list("notes"), events: list("events"), trips: list("trips"), apartments: list("apartments"),
     expenses: list("expenses"), incomes: list("incomes"), transfers: list("transfers"), accounts: list("accounts"),
     weights: list("weights").sort((a, b) => (a.date < b.date ? -1 : 1)), utilities: list("utilities"), settings: st,
+    profile: by.profile ?? {}, activities: list("activities"), meals: Array.isArray(by.meals?.days) ? by.meals.days : [],
+    shopping: list("shopping"), recipes: list("recipes"),
   };
   c.usd = (await vndRate("USD", c)) || 25000;
   const b = await budgetOf(c, st);
@@ -261,7 +264,7 @@ function balances(c: Ctx): { acc: Item; bal: number }[] {
 
 /* ---------- text -> actions: Groq free tier, or Claude if an Anthropic key is set instead ---------- */
 const KINDS = ["expense", "income", "exchange", "balance", "rate", "event", "note", "health", "utility", "apartment", "trip", "trip_item", "meal",
-  "goal", "goal_add", "weight", "done", "reschedule", "delete", "useful", "setting", "report", "ask"];
+  "goal", "goal_add", "weight", "activity", "coach", "meal_plan", "recipe", "shopping", "done", "reschedule", "delete", "useful", "setting", "report", "ask"];
 const SECTIONS = ["expenses", "incomes", "transfers", "events", "notes", "goals", "trips", "health", "apartments", "weights"];
 const REPORTS = ["expenses", "money", "events", "goals", "notes", "weight", "week", "month"];
 const str = { type: "string" }, numb = { type: "number" };
@@ -278,7 +281,7 @@ const RECORD_SCHEMA = {
         additionalProperties: false,
         required: ["kind", "date", "date_to", "title", "text", "city", "amount", "currency", "amount_to", "currency_to", "fee", "fee_currency", "account", "account_to",
           "deposit", "category", "event_type", "time_from", "time_to", "health_kind", "month", "util_kind", "kwh", "rooms", "area", "weekday", "meal", "kcal",
-          "key", "value", "section", "flag"],
+          "key", "value", "section", "flag", "minutes", "met"],
         properties: {
           kind: { type: "string", enum: KINDS },
           date: { type: "string", description: "YYYY-MM-DD or empty" },
@@ -297,8 +300,9 @@ const RECORD_SCHEMA = {
           meal: { type: "string", enum: [...MEALS, ""] },
           kcal: numb,
           key: str, value: str,
-          section: { type: "string", enum: [...new Set([...SECTIONS, ...REPORTS]), ""] },
+          section: { type: "string", enum: [...new Set([...SECTIONS, ...REPORTS, "shopping"]), ""] },
           flag: { type: "boolean" },
+          minutes: numb, met: numb,
         },
       },
     },
@@ -311,6 +315,7 @@ type Rec = {
   amount: number; currency: string; amount_to: number; currency_to: string; fee: number; fee_currency: string; account: string; account_to: string; deposit: number;
   category: string; event_type: string; time_from: string; time_to: string; health_kind: string; month: string; util_kind: string;
   kwh: number; rooms: number; area: number; weekday: number; meal: string; kcal: number; key: string; value: string; section: string; flag: boolean;
+  minutes: number; met: number;
 };
 
 const lines = (l: string[], empty = "нет") => (l.length ? l.join("\n") : empty);
@@ -335,6 +340,9 @@ ${lines(c.apartments.map((a) => `- ${q(a.name)}, ${a.city}${a.current ? " (жи�
 ${lines(exp.map((e) => `- ${e.date} ${e.amount} VND ${e.cat} ${q(e.note)}`))}
 Последние взвешивания:
 ${lines(c.weights.slice(-5).map((w) => `- ${w.date} ${w.kg} кг`))}
+Список покупок: ${lines(c.shopping.map((i) => `- ${q(i.name)}${i.done ? " (куплено)" : ""}`))}
+Рецепты: ${c.recipes.map((r) => q(r.title)).join(", ") || "нет"}
+Профиль питания: ${c.profile.kcal ? `норма ${c.profile.kcal} ккал, цель ${c.profile.goal_kg || "—"} кг` : "не заполнен"}
 Последние доходы:
 ${lines(inc.map((i) => `- ${i.date} ${i.amount} ${i.cur} ${q(i.source)}`))}`;
 }
@@ -363,12 +371,17 @@ const prompt = (c: Ctx) => `Ты помощник пары, которая жи�
 - meal — блюдо в недельный план питания. weekday (0 — понедельник … 6 — воскресенье; сегодня ${todayIdx()}), meal (${MEALS.join(", ")}), title — блюдо, text — дополнение, kcal. На несколько дней — по record на каждый день.
 - goal — новая цель накопить («хотим накопить 38 миллионов на айфон»). title — на что копим, коротко и с заглавной буквы, без суммы; amount + currency — сколько нужно.
 - goal_add — отложили деньги в существующую цель («отложили 5 миллионов на айфон»). title — цель из списка ниже, amount, currency. Это не expense: деньги отложены, а не потрачены.
-- done — что-то сделано («купил переходник», «билеты в Дананг купили», «йогу провели»). section — notes, events или trips; title — текст заметки, события или пункта чек-листа из списков ниже; city — поездка, если это пункт чек-листа.
+- done — что-то сделано («купил переходник», «билеты в Дананг купили», «йогу провели», «курицу купил» — пункт списка покупок). section — notes, events, trips или shopping; title — текст заметки, события или пункта чек-листа из списков ниже; city — поездка, если это пункт чек-листа.
 - reschedule — перенести событие на другую дату или время. title — событие из списка ниже, date, time_from, time_to.
 - delete — удалить запись («удали заметку про визу», «стоматолог отменился», «убери расход на кофе, это ошибка»). section (${SECTIONS.join(", ")}), title — текст записи из списков ниже (для расхода — описание, для дохода — источник).
 - useful — добавить в шпаргалку «Полезное». key (${Object.entries(USEFUL).map(([k, v]) => k + " — " + v).join(", ")}), text.
 - setting — изменить настройку сайта. key (${Object.entries(SETTINGS).map(([k, v]) => k + " — " + v).join(", ")}), value.
 - weight — взвесился («вес 78,4», «утром 79 и 2»). amount — вес в килограммах, date, text — заметка. Для удаления взвешивания в delete title — его дата YYYY-MM-DD.
+- activity — физическая активность: тренировка, прогулка, спорт («пробежал 5 км за 30 минут», «час играли в пиклбол», «прошёл 12 тысяч шагов»). title — что делал, коротко с заглавной буквы; minutes — длительность (шаги переводи как 1000 шагов ≈ 10 минут ходьбы); met — MET этой активности (ходьба 3.5, быстрая ходьба 4.5, бег 9, велосипед 7, плавание 7, силовая 5, йога 2.5, пиклбол и теннис 6, футбол 7, танцы 5, серфинг 3); date.
+- coach — человек хочет похудеть, набрать вес или питаться правильно, просит помочь с питанием или режимом, хочет обновить свои данные для питания. Ничего не заполняй, бот начнёт с ним разговор.
+- meal_plan — составить меню или рацион на неделю, обновить меню, составить список покупок под питание.
+- recipe — рецепт или как приготовить блюдо («как готовить фо с курицей», «рецепт на ужин»). title — блюдо.
+- shopping — показать список покупок.
 - report — вопрос о данных, а не новая запись («сколько потратили в этом месяце», «сколько денег на счетах», «что у нас на неделе», «сколько накопили», «что надо сделать», «как мой вес», «отчёт за неделю», «итоги прошлого месяца»). section: expenses (month — какой месяц), money (доходы, расходы и остатки на счетах; month), events, goals, notes, weight, week (отчёт за последние 7 дней) или month (полный отчёт за месяц; month).
 - ask — любой другой вопрос, на который нужен обдуманный ответ, а не готовая сводка: сравнения, причины, советы, прогнозы, расчёты («на что мы больше всего тратим и где сэкономить», «хватит ли денег до конца месяца», «сколько в среднем уходит на еду в неделю», «когда накопим на айфон», «как изменились траты за три месяца»), а также вопросы о жизни во Вьетнаме. text — вопрос целиком своими словами. Если вопрос подходит под report — используй report, иначе ask.
 Бот сам присылает напоминания о делах за час, утреннюю сводку, вечером напоминание записать расходы и отчёт за день, в воскресенье — за неделю, 1-го числа — за прошлый месяц. Время меняется через setting (notifyMorning, notifyRemind, notifyReport, notifyMonthly; value — HH:MM или off, чтобы выключить).
@@ -401,6 +414,7 @@ function normalize(o: any): { records: Rec[]; question: string } {
     month: text(r.month), util_kind: text(r.util_kind), kwh: amount(r.kwh), rooms: amount(r.rooms), area: amount(r.area),
     weekday: r.weekday === "" || r.weekday == null || +r.weekday < 0 ? -1 : Math.min(6, Math.trunc(+r.weekday) || 0),
     meal: text(r.meal), kcal: amount(r.kcal), key: text(r.key), value: text(r.value), section: text(r.section), flag: r.flag === true || r.flag === "true",
+    minutes: amount(r.minutes), met: amount(r.met),
   }));
   return { records, question: text(o?.question) };
 }
@@ -627,7 +641,19 @@ async function apply(r: Rec, c: Ctx): Promise<Done> {
       if (goal) line += Math.abs(item.kg - goal) < 0.05 ? " · цель достигнута 🎉" : ` · до цели ${kg(Math.abs(item.kg - goal))}`;
       return { line, ops: [op] };
     }
+    case "activity": {
+      // calories by MET × weight × hours; the weight is the last weighing
+      const min = Math.round(r.minutes || 30), w = lastWeight(c) || Number(c.profile.weight_kg) || 75;
+      const met = r.met > 0 && r.met < 20 ? r.met : 4;
+      const item = { id: uid(), date, title: cap(r.title || "Тренировка"), minutes: min, met, kcal: Math.round(met * w * min / 60) };
+      return { line: `🏃 ${esc(item.title)} · ${min} мин · ≈ ${num(item.kcal)} ккал${c.profile.kcal ? ` · к норме сегодня +${num(Math.round(item.kcal / 2))}` : ""}`, ops: [await add("activities", item)] };
+    }
     case "done": {
+      if (r.section === "shopping") {
+        const list = await items("shopping"), it = pick(list.filter((x) => !x.done), r.title, (x) => x.name);
+        if (!it) return miss("в списке покупок", r.title);
+        return { line: `✅ Куплено: ${esc(it.name)}`, ops: [await put("shopping", it, { ...it, done: true })] };
+      }
       const sec = ["notes", "events", "trips"].includes(r.section) ? r.section : "";
       // a trip checklist item: find the trip, then the item in it
       if (sec === "trips" || (!sec && r.city)) {
@@ -771,6 +797,8 @@ function weekReport(c: Ctx, day: string): string {
   if (inc) out += `\n\n💰 Доходы: ${money(inc)}`;
   const wt = weightText(c, day, 7);
   if (wt) out += `\n\n${wt}`;
+  const wa = burnedOn(c, from, day);
+  if (wa.length) out += `\n🏃 Тренировок: ${wa.length}, сожжено ≈ ${num(sumOf(wa, "kcal"))} ккал`;
   if (c.goals.length) out += "\n\n🎯 " + c.goals.map((g) => `${esc(g.title)} ${g.target ? Math.round((+g.saved || 0) / g.target * 100) : 0}%`).join(" · ");
   if (done) out += `\n\n✅ Сделано дел: ${done}`;
   out += next.length ? "\n\n📅 На следующей неделе:\n" + next.slice(0, 8).map((e) => `• ${dshort(e.date)}${e.from ? " " + e.from : ""} — ${esc(e.title)}`).join("\n") : "\n\n📅 На следующей неделе дел в календаре нет.";
@@ -870,6 +898,170 @@ async function ask(question: string, c: Ctx): Promise<string> {
   return fmt(block && block.type === "text" ? block.text : "");
 }
 
+/* ---------- nutrition coach: interview, daily norm, weekly menu, shopping list, recipes ---------- */
+type Msg = { role: string; content: string };
+// one JSON answer from Groq; on a rate limit or an error the next model is tried (each model has its own free quota)
+async function groqJSON(messages: Msg[], maxTokens = 4000): Promise<Item> {
+  const key = await secret("groq_api_key");
+  if (!key) throw new Error("NO_AI_KEY");
+  await groqModel(PREFER_LLM, "llm");
+  const models = PREFER_LLM.filter((m) => groqModels!.includes(m));
+  let last = "";
+  for (const model of models.length ? models : PREFER_LLM.slice(0, 1)) {
+    const r = await fetch(`${GROQ}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model, temperature: 0.4, max_tokens: maxTokens, response_format: { type: "json_object" },
+        ...(model.startsWith("openai/gpt-oss") ? { reasoning_effort: "low" } : {}), messages,
+      }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) {
+      try { return JSON.parse(j.choices?.[0]?.message?.content || "{}"); } catch { last = "bad json"; continue; }
+    }
+    last = j.error?.message ?? String(r.status);
+  }
+  throw new Error("Groq: " + last);
+}
+
+async function chatState(chat: number): Promise<Item | null> {
+  const { data } = await db.from("vl_bot_chat").select("mode, history, updated_at").eq("chat_id", chat).maybeSingle();
+  if (data && Date.now() - Date.parse(data.updated_at) > 864e5) { await setChat(chat, null); return null; }
+  return data;
+}
+async function setChat(chat: number, st: Item | null) {
+  if (!st) await db.from("vl_bot_chat").delete().eq("chat_id", chat);
+  else await db.from("vl_bot_chat").upsert({ chat_id: chat, ...st, updated_at: new Date().toISOString() });
+}
+const lastWeight = (c: Ctx) => Number(c.weights[c.weights.length - 1]?.kg) || 0;
+
+// daily norm by Mifflin–St Jeor, with a deficit (or surplus) for the goal; protein first, then fat, carbs fill the rest
+const ACTIVITY: Record<string, [number, string]> = { sedentary: [1.2, "сидячий образ жизни"], light: [1.375, "немного движения"], moderate: [1.55, "активный день"], high: [1.725, "очень активный"] };
+function targets(p: Item, weight: number) {
+  const w = weight || Number(p.weight_kg) || 75, h = Number(p.height_cm) || 175, a = Number(p.age) || 30, goal = Number(p.goal_kg) || 0;
+  const bmr = 10 * w + 6.25 * h - 5 * a + (p.sex === "f" ? -161 : 5);
+  const tdee = bmr * (ACTIVITY[p.activity]?.[0] ?? 1.375);
+  const lose = goal && goal < w - 0.5, gain = goal && goal > w + 0.5;
+  const kcal = Math.round(Math.max(lose ? tdee * 0.8 : gain ? tdee * 1.1 : tdee, p.sex === "f" ? 1200 : 1500) / 10) * 10;
+  const protein = Math.round((lose ? 2 : 1.6) * (lose ? Math.max(goal, w * 0.85) : w));
+  const fat = Math.round(kcal * 0.28 / 9), carbs = Math.max(0, Math.round((kcal - protein * 4 - fat * 9) / 4));
+  const perWeek = Math.round(Math.abs(tdee - kcal) * 7 / 7700 * 10) / 10;
+  return { kcal, protein, fat, carbs, bmr: Math.round(bmr), tdee: Math.round(tdee), perWeek, weeks: perWeek ? Math.ceil(Math.abs(w - goal) / perWeek) : 0 };
+}
+const targetsText = (t: Item, p: Item) =>
+  `🎯 Расчёт: базовый обмен ~${num(t.bmr)} ккал, с твоей активностью ~${num(t.tdee)} ккал.\n` +
+  `Для цели — <b>${num(t.kcal)} ккал в день</b>: белки ${t.protein} г, жиры ${t.fat} г, углеводы ${t.carbs} г.` +
+  (t.perWeek && p.goal_kg ? `\nЭто около ${num(t.perWeek, 1)} кг в неделю, до ${p.goal_kg} кг — примерно ${t.weeks} нед.` : "") +
+  `\nНа тренировки добавляю половину сожжённых калорий — рассказывай, что делал.`;
+
+const PROFILE_KEYS = ["sex", "age", "height_cm", "weight_kg", "goal_kg", "goal_text", "activity", "workouts", "exclude", "likes", "people", "meals_per_day", "cook_minutes", "food_budget_vnd", "equipment"];
+const COACH_PROMPT = (p: Item, w: number) => `Ты внимательный нутрициолог и тренер. Человек живёт в Нячанге (Вьетнам). Ты знакомишься с ним, чтобы составить питание под его цель.
+Узнай по очереди, по одному-два вопроса за сообщение, коротко, дружелюбно, на «ты»:
+пол, возраст, рост; ${w ? `текущий вес уже известен — ${w} кг, не спрашивай` : "текущий вес"}; цель (сколько кг и к какому сроку, или просто питаться правильно);
+обычная активность в день (сидячая работа, сколько ходит); тренировки — какие и сколько раз в неделю; что не ест, аллергии, ограничения; любимые продукты;
+на сколько человек готовить; сколько раз в день удобно есть; сколько минут в день готов готовить; бюджет на продукты в неделю в донгах; что есть на кухне (плита, духовка, блендер, мультиварка).
+Уже известно: ${JSON.stringify(p)}.
+Ответь JSON: {"reply": "что сказать человеку", "profile": {только новые или уточнённые поля из: sex ("m" или "f"), age, height_cm, weight_kg, goal_kg, goal_text, activity ("sedentary" | "light" | "moderate" | "high"), workouts, exclude, likes, people, meals_per_day, cook_minutes, food_budget_vnd, equipment}, "done": true или false}.
+done = true, когда известно главное: пол, возраст, рост, вес, цель, активность и ограничения в еде; тогда в reply коротко подведи итог, без цифр калорий (их посчитает бот), и больше ничего не спрашивай.
+Если человек просит закончить или отвлекается на другое — done = true.`;
+
+async function coachTurn(chat: number, text: string, c: Ctx, st: Item | null): Promise<string> {
+  if (/^(стоп|хватит|выход|отмена|потом)\b/i.test(text.trim())) {
+    await setChat(chat, null);
+    return "Хорошо, остановились. Продолжим, когда скажешь «хочу похудеть».";
+  }
+  const w = lastWeight(c);
+  const history: Msg[] = (st?.history ?? []).slice(-14);
+  const out = await groqJSON([{ role: "system", content: COACH_PROMPT(c.profile, w) }, ...history, { role: "user", content: text }], 1500);
+  const profile: Item = { ...c.profile };
+  for (const k of PROFILE_KEYS) if (out.profile?.[k] != null && out.profile[k] !== "") profile[k] = out.profile[k];
+  if (w) profile.weight_kg = w;
+  const reply = esc(text_(out.reply) || "Расскажи немного о себе: пол, возраст и рост?");
+  if (out.done) {
+    const t = targets(profile, w);
+    for (const [k, v] of Object.entries({ ...profile, ...t, updated: today() })) await rpc("vl_set", { p_sec: "profile", p_key: k, p_value: v });
+    // the goal weight also goes to the fitness page
+    if (profile.goal_kg) await rpc("vl_set", { p_sec: "settings", p_key: "weightGoal", p_value: Number(profile.goal_kg) });
+    await setChat(chat, null);
+    return `${reply}\n\n${targetsText(t, profile)}\n\nСкажи «составь меню на неделю» — распишу питание на 7 дней, список покупок с ценами и рецепты.`;
+  }
+  for (const [k, v] of Object.entries(profile)) await rpc("vl_set", { p_sec: "profile", p_key: k, p_value: v });
+  await setChat(chat, { mode: "coach", history: [...history, { role: "user", content: text }, { role: "assistant", content: JSON.stringify({ reply: out.reply, profile: out.profile ?? {}, done: false }) }] });
+  return reply;
+}
+const text_ = (v: unknown) => String(v ?? "").trim();
+
+const profileText = (p: Item) => `норма ${p.kcal} ккал в день, белки ${p.protein} г, жиры ${p.fat} г, углеводы ${p.carbs} г; ` +
+  `готовить на ${p.people || 1} чел.; приёмов пищи: ${p.meals_per_day || 4}; на готовку до ${p.cook_minutes || 40} мин в день; ` +
+  `не ест: ${p.exclude || "ограничений нет"}; любит: ${p.likes || "—"}; кухня: ${p.equipment || "плита"}; бюджет на продукты в неделю: ${p.food_budget_vnd || "не указан"} ₫; тренировки: ${p.workouts || "—"}`;
+
+// the menu, its recipes and a shopping list, written to the site's "Питание" page
+async function mealPlan(c: Ctx): Promise<{ text: string; list: string; ops: Op[] }> {
+  const p = c.profile;
+  if (!p.kcal) throw new Error("NO_PROFILE");
+  const base = `Человек живёт в Нячанге (Вьетнам). Продукты — те, что легко купить на местном рынке и в супермаркетах (Lotte Mart, WinMart, Co.op): рыба, морепродукты, курица, свинина, говядина, яйца, тофу, рис, рисовая лапша, овсянка, овощи, тропические фрукты, зелень. Данные: ${profileText(p)}.`;
+  const menu = await groqJSON([{ role: "system", content: `Ты нутрициолог. ${base}
+Составь меню на 7 дней (Пн–Вс), 4 приёма пищи: Завтрак, Обед, Ужин, Перекус (если приёмов меньше — Перекус пустой). Калорийность дня ≈ норме (±5%), белка — не меньше нормы.
+Блюда простые и вкусные, местная кухня и привычная еда вперемешку. Повторяй блюда (готовка впрок): за неделю не больше 10 разных блюд.
+Ответь JSON: {"days":[{"day":"Пн","items":[{"meal":"Завтрак","name":"короткое название","desc":"порция в граммах","kcal":число,"protein":число}, ...]}, ... все 7 дней]}` }, { role: "user", content: "Составь меню на неделю." }], 7000);
+  const days = DAYS.map((day, i) => {
+    const d = (menu.days ?? [])[i] ?? {};
+    return { day, items: MEALS.map((m) => {
+      const it = (d.items ?? []).find((x: Item) => low(x.meal) === low(m)) ?? {};
+      return { name: text_(it.name), desc: text_(it.desc), kcal: Math.round(Number(it.kcal) || 0), protein: Math.round(Number(it.protein) || 0) };
+    }) };
+  });
+  const dishes = [...new Map(days.flatMap((d) => d.items).filter((x) => x.name).map((x) => [low(x.name), x])).values()].slice(0, 12);
+  const recipes: Item[] = [];
+  for (let i = 0; i < dishes.length; i += 6) {
+    const part = dishes.slice(i, i + 6);
+    const r = await groqJSON([{ role: "system", content: `Ты повар и нутрициолог. ${base}
+Для каждого блюда напиши рецепт на ${p.people || 1} чел. в этой калорийности: ингредиенты с граммовкой, понятные шаги, как приготовить правильно и полезно (меньше масла, как не пересушить и т. п.).
+Ответь JSON: {"recipes":[{"title":"как в списке","kcal":на порцию,"time_min":число,"ingredients":["200 г куриного филе", ...],"steps":["…", ...],"tip":"совет"}]}` },
+      { role: "user", content: part.map((x) => `${x.name} (${x.desc}, ~${x.kcal} ккал)`).join("\n") }], 6000);
+    for (const x of r.recipes ?? []) recipes.push({ id: uid(), title: text_(x.title), kcal: Math.round(Number(x.kcal) || 0), time: Math.round(Number(x.time_min) || 0),
+      ingredients: (x.ingredients ?? []).map(text_).filter(Boolean), steps: (x.steps ?? []).map(text_).filter(Boolean), tip: text_(x.tip) });
+  }
+  const shop = await groqJSON([{ role: "system", content: `Ты помогаешь с покупками. ${base}
+По меню и рецептам на неделю составь один общий список покупок на ${p.people || 1} чел. Объединяй одинаковые продукты, указывай количество на всю неделю и примерную цену в донгах в Нячанге сейчас.
+Группы: Овощи и зелень, Фрукты, Мясо и рыба, Яйца и молочное, Крупы и бакалея, Другое.
+Ответь JSON: {"items":[{"name":"Куриное филе","qty":"1,2 кг","group":"Мясо и рыба","price_vnd":число}]}` },
+    { role: "user", content: recipes.map((r) => `${r.title}: ${r.ingredients.join(", ")}`).join("\n") + "\nМеню: " + days.map((d) => `${d.day}: ${d.items.map((x) => x.name).filter(Boolean).join(", ")}`).join("; ") }], 4000);
+  const items = (shop.items ?? []).map((x: Item) => ({ id: uid(), name: text_(x.name), qty: text_(x.qty), group: text_(x.group) || "Другое", price: Math.round(Number(x.price_vnd) || 0), done: false })).filter((x: Item) => x.name);
+  const ops = [await setKey("meals", "days", days), await setKey("shopping", "items", items), await setKey("recipes", "items", recipes)];
+  const total = sumOf(items, "price");
+  const avg = Math.round(days.reduce((s, d) => s + d.items.reduce((a, x) => a + x.kcal, 0), 0) / 7);
+  const td = days[todayIdx()];
+  const text = `🥗 Меню на неделю готово: в среднем ${num(avg)} ккал в день при норме ${num(p.kcal)}.\n\n` +
+    `Сегодня, ${DAYS_FULL[todayIdx()]}:\n${td.items.filter((x) => x.name).map((x, i) => `• ${MEALS[i]}: ${esc(x.name)} — ${x.kcal} ккал`).join("\n")}\n\n` +
+    `🛒 Список покупок: ${items.length} позиций, примерно ${money(total)}.\n📖 Рецептов: ${recipes.length} — спроси «рецепт ${esc(recipes[0]?.title?.toLowerCase() ?? "блюда")}».\nВсё есть на сайте в разделе «Питание».`;
+  return { text, list: shoppingText(items), ops };
+}
+
+function shoppingText(items: Item[]): string {
+  if (!items.length) return "Списка покупок пока нет. Скажи «составь меню на неделю».";
+  const groups = [...new Set(items.map((i) => i.group))];
+  return "🛒 <b>Список покупок</b>\n" + groups.map((g) => `\n<b>${esc(g)}</b>\n` + items.filter((i) => i.group === g)
+    .map((i) => `${i.done ? "✅" : "▫️"} ${esc(i.name)}${i.qty ? " — " + esc(i.qty) : ""}${i.price ? " · ~" + money(i.price) : ""}`).join("\n")).join("\n") +
+    `\n\nИтого примерно <b>${money(sumOf(items.filter((i) => !i.done), "price"))}</b>${items.some((i) => i.done) ? " за то, что ещё не куплено" : ""}`;
+}
+
+const recipeFormat = (r: Item) => `📖 <b>${esc(r.title)}</b>${r.kcal ? ` · ${r.kcal} ккал` : ""}${r.time ? ` · ${r.time} мин` : ""}\n\n<b>Ингредиенты</b>\n` +
+  r.ingredients.map((x: string) => `• ${esc(x)}`).join("\n") + `\n\n<b>Как готовить</b>\n` + r.steps.map((x: string, i: number) => `${i + 1}. ${esc(x)}`).join("\n") +
+  (r.tip ? `\n\n💡 ${esc(r.tip)}` : "");
+async function recipeText(name: string, c: Ctx): Promise<string> {
+  const found = pick(c.recipes, name, (x) => x.title);
+  if (found) return recipeFormat(found);
+  const p = c.profile;
+  const out = await groqJSON([{ role: "system", content: `Ты повар и нутрициолог. Человек живёт в Нячанге, продукты — с местного рынка и из супермаркетов. ${p.kcal ? "Данные: " + profileText(p) : ""}
+Напиши полезный рецепт. Ответь JSON: {"title":"…","kcal":на порцию,"time_min":число,"ingredients":["…"],"steps":["…"],"tip":"как приготовить правильно"}` }, { role: "user", content: name }], 2500);
+  const r = { id: uid(), title: text_(out.title) || cap(name), kcal: Math.round(Number(out.kcal) || 0), time: Math.round(Number(out.time_min) || 0),
+    ingredients: (out.ingredients ?? []).map(text_).filter(Boolean), steps: (out.steps ?? []).map(text_).filter(Boolean), tip: text_(out.tip) };
+  if (r.steps.length) await add("recipes", r);
+  return recipeFormat(r);
+}
+
 /* ---------- scheduled messages: pg_cron calls the function every 15 minutes ---------- */
 // local date, minutes since midnight and weekday (0 = Monday) in Vietnam
 function local(now: Date) {
@@ -885,6 +1077,15 @@ async function once(key: string): Promise<boolean> {
   return !!data?.length;
 }
 
+// today's menu from the site, and the calories burned in activities on a day
+const dayIdx = (day: string) => (new Date(day + "T12:00:00Z").getUTCDay() + 6) % 7;
+function menuLine(c: Ctx, day: string): string {
+  const d = c.meals[dayIdx(day)];
+  const it = (d?.items ?? []).map((x: Item, i: number) => (x.name ? `• ${MEALS[i]}: ${esc(x.name)}${x.kcal ? ` (${x.kcal} ккал)` : ""}` : "")).filter(Boolean);
+  return it.length ? "\n\n🍽 По меню:\n" + it.join("\n") : "";
+}
+const burnedOn = (c: Ctx, from: string, to = from) => c.activities.filter((a) => a.date >= from && a.date <= to);
+
 function morning(c: Ctx, day: string): string {
   const ev = c.events.filter((e) => e.date === day && !e.done).sort((a, b) => (a.from < b.from ? -1 : 1));
   const open = c.notes.filter((n) => !n.done);
@@ -893,7 +1094,7 @@ function morning(c: Ctx, day: string): string {
   out += ev.length ? "\n\n📅 В планах:\n" + ev.map((e) => `• ${e.from ? e.from + " " : ""}${esc(e.title)}`).join("\n") : "\n\n📅 В календаре на сегодня ничего нет.";
   if (open.length) out += `\n\n📝 Открытых задач: ${open.length}` + open.slice(0, 3).map((n) => `\n• ${esc(n.text)}`).join("");
   if (trip) { const n = Math.round((Date.parse(trip.from) - Date.parse(day)) / 864e5); out += `\n\n✈️ ${esc(trip.city)} через ${n} ${n === 1 ? "день" : n < 5 ? "дня" : "дней"}`; }
-  return out + weighNudge(c, day);
+  return out + menuLine(c, day) + weighNudge(c, day);
 }
 
 function evening(c: Ctx, day: string): string {
@@ -903,6 +1104,7 @@ function evening(c: Ctx, day: string): string {
     ? `📝 Сегодня записано расходов: ${s.list.length} на ${money(s.total)}. Если тратили что-то ещё — надиктуйте, я добавлю.`
     : "📝 За сегодня ещё нет ни одного расхода. Что потратили? Надиктуйте голосовое, например «кофе 60 тысяч, такси 120».";
   if (left.length) out += "\n\nНе отмечены выполненными:\n" + left.map((e) => `• ${esc(e.title)}`).join("\n") + "\nСкажите «сделано: …», если уже готово.";
+  if (c.profile.kcal && !burnedOn(c, day).length) out += "\n\n🏃 Была сегодня активность или тренировка? Расскажи — учту калории.";
   return out + weighNudge(c, day);
 }
 
@@ -918,6 +1120,9 @@ function dayReport(c: Ctx, day: string): string {
   out += `\n\nЗа ${MONTHS[+m.slice(5) - 1]}: ${money(mon.total)} из ${money(c.budget)} на траты (${c.budget ? Math.round(mon.total / c.budget * 100) : 0}%)`;
   out += left >= 0 ? (daysLeft > 0 ? `, можно тратить ≈ ${money(left / daysLeft)} в день` : "") : `, перерасход ${money(-left)}`;
   if (done) out += `\n✅ Сделано дел: ${done}`;
+  const act = burnedOn(c, day), burned = sumOf(act, "kcal");
+  if (burned) out += `\n🏃 ${act.map((a) => esc(a.title)).join(", ")} — ≈ ${num(burned)} ккал`;
+  if (c.profile.kcal) out += `\n🥗 Норма еды сегодня: ${num(c.profile.kcal + Math.round(burned / 2))} ккал${burned ? ` (${num(c.profile.kcal)} + половина тренировок)` : ""}`;
   out += tomorrow.length ? "\n\n📅 Завтра:\n" + tomorrow.map((e) => `• ${e.from ? e.from + " " : ""}${esc(e.title)}`).join("\n") : "\n\n📅 На завтра в календаре ничего нет.";
   return out;
 }
@@ -951,6 +1156,8 @@ const EXAMPLES = `• «Потратил 150 тысяч на кофе»
 • «Едем в Далат с 5 по 9 декабря, бюджет 8 миллионов»
 • «Отложили 5 миллионов на айфон»
 • «Вес 78,4»
+• «Хочу похудеть» — расспрошу, посчитаю норму, составлю меню, покупки и рецепты
+• «Час играли в пиклбол»
 • «Переходник купил» — отмечу заметку
 • «Сколько денег на счетах?»
 • «На что мы тратим больше всего и где можно сэкономить?»`;
@@ -1015,14 +1222,32 @@ async function handle(u: any) {
     if (!input) return say(chat, "Пришлите голосовое или текст.");
     await tg("sendChatAction", { chat_id: chat, action: "typing" });
     const c = await context();
+    // during the nutrition interview every message is an answer to it ("стоп" ends it); a day-old interview is dropped
+    const st = await chatState(chat);
+    if (st?.mode === "coach") return say(chat, (voice ? `🎙 «${esc(input)}»\n\n` : "") + await coachTurn(chat, input, c, st));
     const { records, question } = await extract(input, c);
     const heard = voice ? `🎙 «${esc(input)}»\n\n` : "";
     if (!records.length) return say(chat, heard + (question || "Не нашёл, что записать. Скажите, например: «потратил 200 тысяч на продукты»."));
 
-    const done: string[] = [], answers: string[] = [], undo: string[] = [];
+    // later: long extras (the shopping list) that go out as their own messages
+    const done: string[] = [], answers: string[] = [], undo: string[] = [], later: string[] = [];
     for (const r of records) {
       if (r.kind === "report") { answers.push(await report(r, c)); continue; }
       if (r.kind === "ask") { await tg("sendChatAction", { chat_id: chat, action: "typing" }); answers.push(await ask(r.text || input, c)); continue; }
+      if (r.kind === "coach") { await tg("sendChatAction", { chat_id: chat, action: "typing" }); answers.push(await coachTurn(chat, input, c, null)); continue; }
+      if (r.kind === "recipe") { await tg("sendChatAction", { chat_id: chat, action: "typing" }); answers.push(await recipeText(r.title || input, c)); continue; }
+      if (r.kind === "shopping") { answers.push(shoppingText(c.shopping)); continue; }
+      if (r.kind === "meal_plan") {
+        // the menu needs the norm, so without a profile the interview starts first
+        if (!c.profile.kcal) { answers.push(await coachTurn(chat, "Хочу, чтобы ты составил мне питание. " + input, c, null)); continue; }
+        await say(chat, "🧑‍🍳 Составляю меню на неделю, рецепты и список покупок — это займёт около минуты.");
+        const mp = await mealPlan(c);
+        answers.push(mp.text);
+        later.push(mp.list);
+        const { data: row } = await db.from("vl_bot_undo").insert({ chat_id: chat, ops: mp.ops }).select("id").single();
+        if (row) undo.push(row.id);
+        continue;
+      }
       const d = await apply(r, c);
       if (!d.line) continue;
       done.push(d.line);
@@ -1036,6 +1261,7 @@ async function handle(u: any) {
     const buttons = undo.map((id, i) => [{ text: undo.length > 1 ? `↩️ Отменить ${i + 1}` : "↩️ Отменить", callback_data: `x:${id}` }]);
     const reply = [done.length ? "Записал:\n" + done.join("\n") : "", ...answers].filter(Boolean).join("\n\n");
     await say(chat, heard + reply, buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {});
+    for (const x of later) await say(chat, x);
   } catch (e) {
     const err = String((e as Error).message);
     if (err === "NO_STT_KEY" || err === "NO_AI_KEY") return say(chat, "Бот ещё не до конца настроен: нужен бесплатный ключ Groq. Как только он будет добавлен, я начну понимать голосовые и текст.");

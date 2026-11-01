@@ -425,6 +425,22 @@ body{margin:0}
 .lb .cnt{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);color:#fff;font-size:13px;opacity:.85}
 @media (max-width:560px){.lb .prev{left:8px}.lb .next{right:8px}.lb img{max-width:100vw;border-radius:0}}
 .field input:disabled{opacity:.5;cursor:not-allowed}
+
+/* ---------- nutrition: shopping list and recipes ---------- */
+.shop-g{font-size:11px;color:var(--muted);margin:12px 0 4px}
+.shop-g:first-of-type{margin-top:0}
+.shop-i{display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:12px;align-items:center;padding:4px 0;font-size:12px}
+.shop-i em{font-style:normal;color:var(--muted)}
+.shop-i.done span{color:var(--muted);text-decoration:line-through}
+.rlist{display:grid;gap:4px}
+.rlist button{display:grid;grid-template-columns:minmax(0,1fr) auto 16px;gap:12px;align-items:center;text-align:left;padding:8px;border-radius:8px;font-size:12px;transition:background-color .15s cubic-bezier(.22,1,.36,1)}
+.rlist button:hover{background:var(--soft)}
+.rlist em{font-style:normal;font-size:11px}
+.rlist svg.i{width:14px;height:14px;color:var(--muted)}
+.modal.recipe{width:520px}
+.modal.recipe h4{margin:16px 0 8px;font-size:13px;font-weight:600}
+.modal.recipe ul,.modal.recipe ol{margin:0;padding-left:20px;font-size:13px;line-height:1.6}
+.modal.recipe .tip{margin:16px 0 0;padding:12px;border-radius:8px;background:var(--green-soft);font-size:12.5px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -616,7 +632,7 @@ const MEALT=['Завтрак','Обед','Ужин','Перекус'];
 // currency: symbol, default account name
 const CUR={VND:['₫','Донги'],RUB:['₽','Рубли'],KZT:['₸','Тенге'],USD:['$','Доллары'],EUR:['€','Евро'],THB:['฿','Баты']};
 const NAV=[['home','Главная','home'],['expenses','Расходы','receipt'],['money','Доходы и счета','wallet'],['analytics','Аналитика','chart'],['housing','Жилье','house'],['utilities','Коммуналка','plug'],['food','Питание','utensils'],['goals','Цели','target'],['calendar','Календарь','calendar'],['trips','Путешествия','plane'],['health','Здоровье','heart'],['fitness','Физформа','yoga'],['notes','Заметки','note'],['useful','Полезное','doc'],['settings','Настройки','settings']];
-const SECS=['expenses','incomes','accounts','transfers','utilities','apartments','goals','events','trips','meals','notes','health','weights','useful','settings'];
+const SECS=['expenses','incomes','accounts','transfers','utilities','apartments','goals','events','trips','meals','notes','health','weights','activities','shopping','recipes','profile','useful','settings'];
 
 /* ---------- helpers ---------- */
 const pad=n=>String(n).padStart(2,'0');
@@ -640,7 +656,7 @@ const cash=(n,c)=>(Number(n)||0).toLocaleString('ru-RU',{maximumFractionDigits:c
 const rateText=n=>n.toLocaleString('ru-RU',{maximumFractionDigits:n>=100?0:n>=1?2:4}).replace(/\s/g,NB);
 
 /* ---------- state & storage ---------- */
-const S={expenses:[],incomes:[],accounts:[],transfers:[],utilities:[],apartments:[],goals:[],events:[],trips:[],meals:{days:[]},notes:[],health:[],weights:[],useful:{},settings:{city:'Нячанг',temp:32,feels:36,rate:25000,budget:70000000,kwhPrice:3000,quote:'«Больше жизни, меньше суеты»',name:''}};
+const S={expenses:[],incomes:[],accounts:[],transfers:[],utilities:[],apartments:[],goals:[],events:[],trips:[],meals:{days:[]},notes:[],health:[],weights:[],activities:[],shopping:[],recipes:[],profile:{},useful:{},settings:{city:'Нячанг',temp:32,feels:36,rate:25000,budget:70000000,kwhPrice:3000,quote:'«Больше жизни, меньше суеты»',name:''}};
 let db=null, mode='loading', loaded=false, introDone=false;
 /* cloud mode (Supabase): signed-in members share one copy of the data; the Telegram bot writes there too */
 let sb=null, user=null, dbKind='';
@@ -986,12 +1002,24 @@ function utilitiesPage(){
 function kwCalc(){const a=+($('#kw1')||{}).value||0,b=+($('#kw2')||{}).value||0,p=+($('#kwp')||{}).value||0,o=+($('#kwo')||{}).value||0;const r=$('#kwres');if(!r)return;const k=Math.max(0,b-a);r.innerHTML=`Расход: <b>${k} кВт·ч</b> → электричество <b class="num">${vnd(k*p)}</b><br>Итого коммуналка: <b class="num">${vnd(k*p+o)}</b> <span class="muted num">${usd(k*p+o)}</span>`}
 
 /* ---------- food ---------- */
+// the norm and its macros come from the bot's nutrition interview; half of today's training is added to the norm
 function foodPage(){
-  const days=S.meals.days||[];
+  const days=S.meals.days||[],p=S.profile||{};
+  const burned=S.activities.filter(a=>a.date===iso(new Date())).reduce((s,a)=>s+(Number(a.kcal)||0),0);
+  const shop=S.shopping,left=shop.filter(i=>!i.done),groups=[...new Set(shop.map(i=>i.group||'Другое'))];
   return `<div class="ptitle"><h2>Питание</h2><span class="muted">План на неделю. Нажмите на блюдо, чтобы изменить.</span></div>
+  ${p.kcal?`<div class="kpis"><div class="card kpi"><small>Норма в день</small><b class="num">${fmt(p.kcal)} ккал</b><span class="muted num">белки ${p.protein} · жиры ${p.fat} · углеводы ${p.carbs} г</span></div>
+    <div class="card kpi"><small>Сегодня с тренировками</small><b class="num">${fmt(p.kcal+Math.round(burned/2))} ккал</b><span class="muted">${burned?'сожжено ≈ '+fmt(burned)+' ккал':'активности сегодня не было'}</span></div>
+    <div class="card kpi"><small>Цель</small><b class="num">${p.goal_kg?esc(p.goal_kg)+' кг':'—'}</b><span class="muted">${p.perWeek?'≈ '+String(p.perWeek).replace('.',',')+' кг в неделю'+(p.weeks?', '+p.weeks+' нед.':''):''}</span></div>
+    <div class="card kpi"><small>Покупки на неделю</small><b class="num">${vnd(left.reduce((s,i)=>s+(Number(i.price)||0),0))}</b><span class="muted">${shop.length?left.length+' из '+shop.length+' ещё не куплено':'списка пока нет'}</span></div></div>`
+  :`<div class="card"><div class="empty">Напишите боту в Telegram «хочу похудеть»: он расспросит о вас, посчитает норму калорий и составит меню на неделю, список покупок и рецепты.</div></div>`}
   <div class="card"><div class="tbl-wrap"><table><thead><tr><th>День</th>${MEALT.map((m,j)=>`<th><img src="${imgFor('food'+(j+1))}" alt="" style="width:46px;height:32px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:8px">${m}</th>`).join('')}<th class="r">ккал</th></tr></thead><tbody>
   ${days.map((d,i)=>`<tr${i===(new Date().getDay()+6)%7?' style="background:#f4faf5"':''}><td><b>${d.day}</b></td>${d.items.map((m,j)=>`<td style="cursor:pointer" data-act="meal" data-d="${i}" data-j="${j}">${esc(m.name)}<br><small class="muted">${esc(m.desc)}</small></td>`).join('')}<td class="r num">${d.items.reduce((s,m)=>s+(+m.kcal||0),0)}</td></tr>`).join('')}
   </tbody></table></div></div>
+  ${shop.length||S.recipes.length?`<div class="grid2"><div class="card"><div class="chd"><h3>Список покупок</h3><span class="muted sp num" style="font-size:11.5px">${shop.length?'≈ '+vnd(left.reduce((s,i)=>s+(Number(i.price)||0),0)):''}</span></div>
+    ${shop.length?groups.map(g=>`<div class="shop-g">${esc(g)}</div>${shop.filter(i=>(i.group||'Другое')===g).map(i=>`<div class="shop-i ${i.done?'done':''}"><button class="chk ${i.done?'on':''}" data-act="toggleShop" data-id="${i.id}" aria-label="Куплено">${i.done?ic('check'):''}</button><span>${esc(i.name)}${i.qty?` <small class="muted">${esc(i.qty)}</small>`:''}</span><em class="num">${i.price?vnd(i.price):''}</em></div>`).join('')}`).join(''):'<div class="empty">Списка пока нет</div>'}</div>
+    <div class="card"><div class="chd"><h3>Рецепты</h3><span class="muted sp" style="font-size:11.5px">${S.recipes.length} ${plural(S.recipes.length,'блюдо','блюда','блюд')}</span></div>
+    ${S.recipes.length?`<div class="rlist">${S.recipes.map(r=>`<button data-act="recipe" data-id="${r.id}"><span>${esc(r.title)}</span><em class="muted num">${[r.kcal?r.kcal+' ккал':'',r.time?r.time+' мин':''].filter(Boolean).join(' · ')}</em>${ic('chev')}</button>`).join('')}</div>`:'<div class="empty">Рецептов пока нет</div>'}</div></div>`:''}
   <div class="card"><div class="chd"><h3>Принципы правильного питания в жару</h3></div><ul style="margin:0;padding-left:18px;line-height:1.7;font-size:12.5px">
   <li>2,5–3 литра воды в день, больше — при активности на солнце.</li><li>Белок в каждом приёме пищи: рыба, курица, тофу, яйца.</li><li>Местные фрукты вместо сладостей: манго, драгонфрут, папайя.</li><li>Супы на бульоне (фо, бун) — лёгкий и сытный обед.</li><li>Меньше жареного и сладких напитков с сиропом.</li></ul></div>`;
 }
@@ -1068,6 +1096,9 @@ function fitnessPage(){
     <div class="card kpi"><small>За месяц</small><b class="num">${c30==null?'—':kgDiff(c30)}</b><span class="muted">${c30==null?'мало данных':'с '+dshort(day(30))}</span></div>
     <div class="card kpi"><small>Цель</small><b class="num">${goal?kg(goal):'—'}</b><span class="muted">${goal&&last?(Math.abs(last.kg-goal)<0.05?'цель достигнута':'осталось '+kg(Math.abs(last.kg-goal))):'нажмите «Цель», чтобы задать'}</span></div></div>
   <div class="card"><div class="chd"><div class="ib g">${ic('chart')}</div><h3>Динамика веса</h3></div>${weightChart(l.slice(-60))}</div>
+  ${(()=>{const acts=S.activities.slice().sort((a,b)=>a.date<b.date?1:-1).slice(0,20),wk=S.activities.filter(a=>-daysTo(a.date)<7&&-daysTo(a.date)>=0);
+    return `<div class="card"><div class="chd"${acts.length?'':' style="margin-bottom:0"'}><div class="ib">${ic('yoga')}</div><div><h3>Активность</h3><div class="sub">${wk.length?'за 7 дней: '+wk.length+' '+plural(wk.length,'тренировка','тренировки','тренировок')+', ≈ '+fmt(wk.reduce((s,a)=>s+(Number(a.kcal)||0),0))+' ккал':'Расскажите боту, что делали: «час играли в пиклбол»'}</div></div></div>
+    ${acts.length?`<div class="tbl-wrap"><table><thead><tr><th>Дата</th><th>Что</th><th class="r">Минут</th><th class="r">Ккал</th><th></th></tr></thead><tbody>${acts.map(a=>`<tr><td class="num">${dshort(a.date)}</td><td>${esc(a.title)}</td><td class="r num">${a.minutes||'—'}</td><td class="r num">${fmt(a.kcal)}</td><td><div class="acts"><button data-act="delActivity" data-id="${a.id}" aria-label="Удалить">${ic('trash')}</button></div></td></tr>`).join('')}</tbody></table></div>`:''}</div>`})()}
   <div class="card"><div class="chd"><h3>Взвешивания</h3></div>${rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Дата</th><th class="r">Вес</th><th class="r">Изменение</th><th>Заметка</th><th></th></tr></thead><tbody>
   ${rows.map(w=>{const i=l.indexOf(w),d=i>0?Number(w.kg)-Number(l[i-1].kg):null;return `<tr><td class="num">${dshort(w.date)} ${parse(w.date).getFullYear()}</td><td class="r num"><b>${kg(w.kg)}</b></td><td class="r num ${d==null||!d?'muted':good(d)?'down':'up'}">${d==null?'—':kgDiff(d)}</td><td class="muted">${esc(w.note)}</td><td><div class="acts"><button data-act="editWeight" data-id="${w.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delWeight" data-id="${w.id}" aria-label="Удалить">${ic('trash')}</button></div></td></tr>`}).join('')}
   </tbody></table></div>`:'<div class="empty">Запишите первый вес кнопкой выше или скажите боту: «вес 78,4».</div>'}
@@ -1160,6 +1191,18 @@ function form(title,fields,vals,onSave,onDel){
   const first=bg.querySelector('input,select,textarea');if(first)first.focus();
   document.addEventListener('keydown',function k(e){if(e.key==='Escape'){close();document.removeEventListener('keydown',k)}});
 }
+function showRecipe(r){
+  const bg=document.createElement('div');bg.className='modal-bg';
+  bg.innerHTML=`<div class="modal recipe" role="dialog" aria-modal="true"><h3>${esc(r.title)}</h3><div class="muted num" style="margin:-8px 0 16px">${[r.kcal?r.kcal+' ккал на порцию':'',r.time?r.time+' мин':''].filter(Boolean).join(' · ')}</div>
+    <h4>Ингредиенты</h4><ul>${(r.ingredients||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
+    <h4>Как готовить</h4><ol>${(r.steps||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ol>
+    ${r.tip?`<p class="tip">${esc(r.tip)}</p>`:''}<div class="mfoot"><button class="btn ghost" data-x="close">Закрыть</button></div></div>`;
+  document.body.appendChild(bg);
+  const close=()=>{bg.remove();document.removeEventListener('keydown',k)};
+  const k=e=>{if(e.key==='Escape')close()};
+  bg.addEventListener('click',e=>{if(e.target===bg||e.target.closest('[data-x="close"]'))close()});
+  document.addEventListener('keydown',k);
+}
 function toast(m){const t=document.createElement('div');t.className='toast';t.textContent=m;document.body.appendChild(t);setTimeout(()=>t.remove(),2600)}
 const upsert=(sec,item)=>{const a=S[sec];const i=a.findIndex(x=>x.id===item.id);if(i>=0)a[i]=item;else a.push(item);save(sec)};
 const remove=(sec,id)=>{S[sec]=S[sec].filter(x=>x.id!==id);save(sec)};
@@ -1205,6 +1248,9 @@ function act(a,el){
   case 'addWeight':{const l=S.weights;form('Вес',F.weight,{date:iso(new Date()),kg:l.length?l.slice().sort((a,b)=>a.date<b.date?1:-1)[0].kg:''},o=>{const ex=l.find(w=>w.date===o.date);upsert('weights',{id:ex?ex.id:uid(),...o});toast('Вес записан')});break}
   case 'editWeight':{const e=find('weights',id);form('Вес',F.weight,e,o=>upsert('weights',{...e,...o}),()=>remove('weights',id));break}
   case 'delWeight':remove('weights',id);break;
+  case 'delActivity':remove('activities',id);break;
+  case 'toggleShop':{const it=find('shopping',id);if(it){it.done=!it.done;save('shopping')}break}
+  case 'recipe':{const r=find('recipes',id);if(r)showRecipe(r);break}
   case 'weightGoal':form('Цель по весу',[{k:'weightGoal',l:'Желаемый вес, кг',t:'number',full:1}],{weightGoal:S.settings.weightGoal||''},o=>{S.settings={...S.settings,weightGoal:o.weightGoal};save('settings')});break;
   case 'addAccount':form('Новый счёт',F.account,{cur:'VND',start:0},o=>upsert('accounts',{id:uid(),...o}));break;
   case 'editAccount':{const e=find('accounts',id);form('Счёт',F.account,e,o=>upsert('accounts',{...e,...o}),()=>remove('accounts',id));break}
@@ -1255,7 +1301,7 @@ function act(a,el){
   case 'exportJson':{const b=$('#jsonbox');b.hidden=false;b.value=JSON.stringify(S,null,1);b.select();try{navigator.clipboard.writeText(b.value).then(()=>toast('JSON скопирован'),()=>toast('Выделите и скопируйте текст'))}catch(e){}break}
   case 'importJson':{const b=$('#jsonbox');if(b.hidden||!b.value.trim()){b.hidden=false;b.value='';b.focus();toast('Вставьте JSON и нажмите «Импорт» ещё раз');break}try{const d=JSON.parse(b.value);SECS.forEach(s=>{if(d[s]!=null){S[s]=d[s];save(s)}});toast('Данные импортированы')}catch(e){toast('Это не похоже на корректный JSON')}break}
   case 'resetDemo':confirmBox('Заменить все данные примером из макета?',()=>loadDemo());break;
-  case 'clearAll':confirmBox('Удалить все записи? Настройки останутся.',()=>{['expenses','incomes','accounts','transfers','utilities','apartments','goals','events','trips','notes','health','weights'].forEach(s=>{S[s]=[];save(s)});toast('Данные очищены')});break;
+  case 'clearAll':confirmBox('Удалить все записи? Настройки останутся.',()=>{['expenses','incomes','accounts','transfers','utilities','apartments','goals','events','trips','notes','health','weights','activities','shopping','recipes'].forEach(s=>{S[s]=[];save(s)});toast('Данные очищены')});break;
   }
 }
 function confirmBox(msg,fn){const c=$('#confirm');c.innerHTML=`<div style="margin-top:12px;padding:12px;border-radius:10px;background:#fdf1f0;font-size:12.5px">${esc(msg)}<div style="display:flex;gap:8px;margin-top:8px"><button class="btn danger" id="cy">Да</button><button class="btn ghost" id="cn">Отмена</button></div></div>`;$('#cy').onclick=()=>{c.innerHTML='';fn()};$('#cn').onclick=()=>c.innerHTML=''}
