@@ -378,7 +378,7 @@ const prompt = (c: Ctx) => `Ты помощник пары, которая жи�
 - setting — изменить настройку сайта. key (${Object.entries(SETTINGS).map(([k, v]) => k + " — " + v).join(", ")}), value.
 - weight — взвесился («вес 78,4», «утром 79 и 2»). amount — вес в килограммах, date, text — заметка. Для удаления взвешивания в delete title — его дата YYYY-MM-DD.
 - activity — физическая активность: тренировка, прогулка, спорт («пробежал 5 км за 30 минут», «час играли в пиклбол», «прошёл 12 тысяч шагов»). title — что делал, коротко с заглавной буквы; minutes — длительность (шаги переводи как 1000 шагов ≈ 10 минут ходьбы); met — MET этой активности (ходьба 3.5, быстрая ходьба 4.5, бег 9, велосипед 7, плавание 7, силовая 5, йога 2.5, пиклбол и теннис 6, футбол 7, танцы 5, серфинг 3); date.
-- coach — человек хочет похудеть, набрать вес или питаться правильно, просит помочь с питанием или режимом, хочет обновить свои данные для питания. Ничего не заполняй, бот начнёт с ним разговор.
+- coach — человек хочет похудеть, набрать вес или питаться правильно, просит помочь с питанием или режимом, хочет обновить свои данные для питания. Верни один record с kind "coach", остальные поля пустые: бот сам начнёт с ним разговор.
 - meal_plan — составить меню или рацион на неделю, обновить меню, составить список покупок под питание.
 - recipe — рецепт или как приготовить блюдо («как готовить фо с курицей», «рецепт на ужин»). title — блюдо.
 - shopping — показать список покупок.
@@ -992,6 +992,15 @@ async function coachTurn(chat: number, text: string, c: Ctx, st: Item | null): P
 }
 const text_ = (v: unknown) => String(v ?? "").trim();
 
+// "хочу похудеть", "составь меню на неделю": the coach's own phrases, matched before the AI parses anything
+// (\w does not match Cyrillic, so word endings are spelled [а-яё]*)
+const COACH_RE = /похудеть|похудени|похудан|сбросить\s+(вес|\d)|скинуть\s+(вес|\d|кил)|набрать\s+(вес|масс)|правильн[а-яё]*\s+питани|(подбери|подобрать|помоги|помогите)[а-яё]*\s+(мне\s+)?(с\s+)?питани|диет/i;
+const MENU_RE = /(меню|рацион)\s+на\s+(неделю|7|семь)|состав[а-яё]*\s+(мне\s+)?(меню|рацион)|обнов[а-яё]*\s+меню/i;
+function quickIntent(input: string, c: Ctx): Rec | null {
+  const kind = MENU_RE.test(input) ? "meal_plan" : COACH_RE.test(input) ? (c.profile.kcal && /меню|рацион/i.test(input) ? "meal_plan" : "coach") : "";
+  return kind ? normalize({ records: [{ kind }] }).records[0] : null;
+}
+
 const profileText = (p: Item) => `норма ${p.kcal} ккал в день, белки ${p.protein} г, жиры ${p.fat} г, углеводы ${p.carbs} г; ` +
   `готовить на ${p.people || 1} чел.; приёмов пищи: ${p.meals_per_day || 4}; на готовку до ${p.cook_minutes || 40} мин в день; ` +
   `не ест: ${p.exclude || "ограничений нет"}; любит: ${p.likes || "—"}; кухня: ${p.equipment || "плита"}; бюджет на продукты в неделю: ${p.food_budget_vnd || "не указан"} ₫; тренировки: ${p.workouts || "—"}`;
@@ -1225,9 +1234,16 @@ async function handle(u: any) {
     // during the nutrition interview every message is an answer to it ("стоп" ends it); a day-old interview is dropped
     const st = await chatState(chat);
     if (st?.mode === "coach") return say(chat, (voice ? `🎙 «${esc(input)}»\n\n` : "") + await coachTurn(chat, input, c, st));
-    const { records, question } = await extract(input, c);
+    // the nutrition coach and the weekly menu are recognised without the AI, so they always start
+    const quick = quickIntent(input, c);
+    const { records, question } = quick ? { records: [quick], question: "" } : await extract(input, c);
     const heard = voice ? `🎙 «${esc(input)}»\n\n` : "";
-    if (!records.length) return say(chat, heard + (question || "Не нашёл, что записать. Скажите, например: «потратил 200 тысяч на продукты»."));
+    if (!records.length) {
+      if (question) return say(chat, heard + question);
+      // nothing to record: answer it like a question instead of a dead end
+      await tg("sendChatAction", { chat_id: chat, action: "typing" });
+      return say(chat, heard + await ask(input, c));
+    }
 
     // later: long extras (the shopping list) that go out as their own messages
     const done: string[] = [], answers: string[] = [], undo: string[] = [], later: string[] = [];
