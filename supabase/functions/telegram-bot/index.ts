@@ -203,6 +203,7 @@ type Ctx = {
   goals: Item[]; notes: Item[]; events: Item[]; trips: Item[]; apartments: Item[]; expenses: Item[]; incomes: Item[]; transfers: Item[]; accounts: Item[];
   weights: Item[]; utilities: Item[]; settings: Item;
   profile: Item; activities: Item[]; meals: Item[]; shopping: Item[]; recipes: Item[];
+  people: { chat_id: number; name: string }[]; me: number;
 };
 async function context(): Promise<Ctx> {
   const { data } = await db.from("vl_sections").select("sec, body");
@@ -215,7 +216,7 @@ async function context(): Promise<Ctx> {
     expenses: list("expenses"), incomes: list("incomes"), transfers: list("transfers"), accounts: list("accounts"),
     weights: list("weights").sort((a, b) => (a.date < b.date ? -1 : 1)), utilities: list("utilities"), settings: st,
     profile: by.profile ?? {}, activities: list("activities"), meals: Array.isArray(by.meals?.days) ? by.meals.days : [],
-    shopping: list("shopping"), recipes: list("recipes"),
+    shopping: list("shopping"), recipes: list("recipes"), people: [], me: 0,
   };
   c.usd = (await vndRate("USD", c)) || 25000;
   const b = await budgetOf(c, st);
@@ -264,7 +265,7 @@ function balances(c: Ctx): { acc: Item; bal: number }[] {
 
 /* ---------- text -> actions: Groq free tier, or Claude if an Anthropic key is set instead ---------- */
 const KINDS = ["expense", "income", "exchange", "balance", "rate", "event", "note", "health", "utility", "apartment", "trip", "trip_item", "meal",
-  "goal", "goal_add", "weight", "activity", "coach", "meal_plan", "recipe", "shopping", "done", "reschedule", "delete", "useful", "setting", "report", "ask"];
+  "goal", "goal_add", "weight", "activity", "coach", "meal_plan", "recipe", "shopping", "send", "done", "reschedule", "delete", "useful", "setting", "report", "ask"];
 const SECTIONS = ["expenses", "incomes", "transfers", "events", "notes", "goals", "trips", "health", "apartments", "weights"];
 const REPORTS = ["expenses", "money", "events", "goals", "notes", "weight", "week", "month"];
 const str = { type: "string" }, numb = { type: "number" };
@@ -281,7 +282,7 @@ const RECORD_SCHEMA = {
         additionalProperties: false,
         required: ["kind", "date", "date_to", "title", "text", "city", "amount", "currency", "amount_to", "currency_to", "fee", "fee_currency", "account", "account_to",
           "deposit", "category", "event_type", "time_from", "time_to", "health_kind", "month", "util_kind", "kwh", "rooms", "area", "weekday", "meal", "kcal",
-          "key", "value", "section", "flag", "minutes", "met"],
+          "key", "value", "section", "flag", "minutes", "met", "to"],
         properties: {
           kind: { type: "string", enum: KINDS },
           date: { type: "string", description: "YYYY-MM-DD or empty" },
@@ -300,9 +301,9 @@ const RECORD_SCHEMA = {
           meal: { type: "string", enum: [...MEALS, ""] },
           kcal: numb,
           key: str, value: str,
-          section: { type: "string", enum: [...new Set([...SECTIONS, ...REPORTS, "shopping"]), ""] },
+          section: { type: "string", enum: [...new Set([...SECTIONS, ...REPORTS, "shopping", "menu"]), ""] },
           flag: { type: "boolean" },
-          minutes: numb, met: numb,
+          minutes: numb, met: numb, to: str,
         },
       },
     },
@@ -315,7 +316,7 @@ type Rec = {
   amount: number; currency: string; amount_to: number; currency_to: string; fee: number; fee_currency: string; account: string; account_to: string; deposit: number;
   category: string; event_type: string; time_from: string; time_to: string; health_kind: string; month: string; util_kind: string;
   kwh: number; rooms: number; area: number; weekday: number; meal: string; kcal: number; key: string; value: string; section: string; flag: boolean;
-  minutes: number; met: number;
+  minutes: number; met: number; to: string;
 };
 
 const lines = (l: string[], empty = "нет") => (l.length ? l.join("\n") : empty);
@@ -324,7 +325,8 @@ function known(c: Ctx): string {
   const ev = c.events.filter((e) => !e.done && String(e.date) >= from).sort((a, b) => (a.date + a.from < b.date + b.from ? -1 : 1)).slice(0, 40);
   const exp = [...c.expenses].sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 15);
   const inc = [...c.incomes].sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 10);
-  return `Счета:
+  return `Подключены к боту: ${c.people.map((p) => q(p.name) + (p.chat_id === c.me ? " (пишет сейчас)" : "")).join(", ") || "только этот чат"}
+Счета:
 ${lines(c.accounts.map((a) => `- ${q(a.name)} (${a.cur})`))}
 Цели:
 ${lines(c.goals.map((g) => `- ${q(g.title)}: накоплено ${g.saved || 0} из ${g.target || 0} $`))}
@@ -382,6 +384,7 @@ const prompt = (c: Ctx) => `Ты помощник пары, которая жи�
 - meal_plan — составить меню или рацион на неделю, обновить меню, составить список покупок под питание.
 - recipe — рецепт или как приготовить блюдо («как готовить фо с курицей», «рецепт на ужин»). title — блюдо.
 - shopping — показать список покупок.
+- send — написать или переслать сообщение другому человеку, подключённому к боту («напиши Насте, что я задержусь», «отправь Насте список покупок», «нет, ты отправь это Насте»). to — имя из списка «Подключены к боту»; text — что передать, коротко, от лица того, кто пишет; переслать список покупок — section "shopping", меню на сегодня — section "menu"; переслать твой предыдущий ответ из разговора — text пустой.
 - report — вопрос о данных, а не новая запись («сколько потратили в этом месяце», «сколько денег на счетах», «что у нас на неделе», «сколько накопили», «что надо сделать», «как мой вес», «отчёт за неделю», «итоги прошлого месяца»). section: expenses (month — какой месяц), money (доходы, расходы и остатки на счетах; month), events, goals, notes, weight, week (отчёт за последние 7 дней) или month (полный отчёт за месяц; month).
 - ask — любой другой вопрос, на который нужен обдуманный ответ, а не готовая сводка: сравнения, причины, советы, прогнозы, расчёты («на что мы больше всего тратим и где сэкономить», «хватит ли денег до конца месяца», «сколько в среднем уходит на еду в неделю», «когда накопим на айфон», «как изменились траты за три месяца»), а также вопросы о жизни во Вьетнаме. text — вопрос целиком своими словами. Если вопрос подходит под report — используй report, иначе ask.
 Бот сам присылает напоминания о делах за час, утреннюю сводку, вечером напоминание записать расходы и отчёт за день, в воскресенье — за неделю, 1-го числа — за прошлый месяц. Время меняется через setting (notifyMorning, notifyRemind, notifyReport, notifyMonthly; value — HH:MM или off, чтобы выключить).
@@ -391,6 +394,8 @@ ${known(c)}
 
 Правила:
 - Одно сообщение может содержать несколько действий: верни их все.
+- Учитывай предыдущие реплики разговора: «нет, ты отправь ей», «и ещё одно такое же», «перенеси его на завтра» относятся к сказанному раньше.
+- Если сообщение — просто разговор, вопрос или просьба, которую нельзя записать, верни один record с kind "ask" и text — вопрос целиком.
 - Для goal_add, done, reschedule, delete и trip_item копируй title и city точно из списков выше. Если подходящей записи нет, ничего не выдумывай: верни пустой records и спроси в question, что имелось в виду.
 - Поля, которые не нужны для этого вида, оставляй пустой строкой, 0, false; weekday — -1.
 - Если смысл непонятен, верни пустой records и короткий уточняющий вопрос по-русски в question; иначе question пустой.`;
@@ -414,31 +419,19 @@ function normalize(o: any): { records: Rec[]; question: string } {
     month: text(r.month), util_kind: text(r.util_kind), kwh: amount(r.kwh), rooms: amount(r.rooms), area: amount(r.area),
     weekday: r.weekday === "" || r.weekday == null || +r.weekday < 0 ? -1 : Math.min(6, Math.trunc(+r.weekday) || 0),
     meal: text(r.meal), kcal: amount(r.kcal), key: text(r.key), value: text(r.value), section: text(r.section), flag: r.flag === true || r.flag === "true",
-    minutes: amount(r.minutes), met: amount(r.met),
+    minutes: amount(r.minutes), met: amount(r.met), to: text(r.to),
   }));
   return { records, question: text(o?.question) };
 }
 
-async function extract(input: string, c: Ctx): Promise<{ records: Rec[]; question: string }> {
-  // free path: Groq chat model in JSON mode
-  const groq = await secret("groq_api_key");
-  if (groq) {
-    const r = await fetch(`${GROQ}/chat/completions`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${groq}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        model: await groqModel(PREFER_LLM, "llm"),
-        temperature: 0,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: prompt(c) + "\n\nОтвечай только JSON-объектом по этой JSON-схеме:\n" + JSON.stringify(RECORD_SCHEMA) },
-          { role: "user", content: input },
-        ],
-      }),
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error("Groq: " + (j.error?.message ?? r.status));
-    return normalize(JSON.parse(j.choices?.[0]?.message?.content || "{}"));
+// the answer format for the free models, short: the full JSON schema alone would eat a third of the free per-minute quota
+const FORMAT = `Ответь только JSON: {"records":[{"kind":"…", и только нужные этому виду поля из: date, date_to, title, text, city, amount, currency, amount_to, currency_to, fee, fee_currency, account, account_to, deposit, category, event_type, time_from, time_to, health_kind, month, util_kind, kwh, rooms, area, weekday, meal, kcal, key, value, section, flag, minutes, met, to}], "question":""}`;
+
+async function extract(input: string, c: Ctx, history: Msg[] = []): Promise<{ records: Rec[]; question: string }> {
+  // free path: Groq, with the last turns of the conversation so that follow-ups make sense
+  if (await secret("groq_api_key")) {
+    const out = await groqJSON([{ role: "system", content: prompt(c) + "\n\n" + FORMAT }, ...history.slice(-8), { role: "user", content: input }], 2500);
+    return normalize(out);
   }
 
   // paid alternative: Claude with structured output, used only if an Anthropic key is added instead
@@ -858,35 +851,21 @@ ${lines(ev.map((e) => `${e.date}${e.from ? " " + e.from : ""} ${e.title}${e.done
 Вес: ${c.weights.slice(-20).map((w) => `${w.date} ${w.kg}`).join(", ") || "нет записей"}${c.settings.weightGoal ? `; цель ${c.settings.weightGoal} кг` : ""}`;
 }
 
-const ASK_SYSTEM = `Ты личный помощник пары, которая живёт во Вьетнаме (Нячанг). У тебя есть все данные из их планера: деньги, счета, планы, вес.
+const ASK_SYSTEM = `Ты личный ИИ-помощник пары, которая живёт во Вьетнаме (Нячанг), и разговариваешь с ними в Telegram. У тебя есть все данные из их планера: деньги, счета, планы, питание, вес, тренировки. Ты помнишь разговор и отвечаешь на любые вопросы и просьбы: о деньгах, планах, здоровье, еде, жизни во Вьетнаме, просто поговорить.
 Отвечай по-русски, по делу и дружелюбно, как толковый друг-финансист: сначала прямой ответ, потом 2–5 коротких пунктов с цифрами и, если уместно, один конкретный совет.
 Считай аккуратно, опирайся только на данные ниже; если данных не хватает — скажи, чего именно, и что записать, чтобы ответ стал точнее. Не выдумывай записи.
 На общие вопросы о жизни во Вьетнаме (визы, банки, транспорт, медицина) отвечай из своих знаний и предупреждай, если правила могли измениться.
 Суммы пиши с пробелами между разрядами и знаком валюты (12 500 000 ₫). Не используй таблицы и заголовки; для выделения — только **жирный**. Не длиннее 15 строк.`;
 
-async function ask(question: string, c: Ctx): Promise<string> {
-  const data = await digest(c);
+async function ask(question: string, c: Ctx, history: Msg[] = []): Promise<string> {
+  const data = await digest(c) + `\nПодключены к боту: ${c.people.map((p) => p.name + (p.chat_id === c.me ? " (пишет сейчас)" : "")).join(", ")}`;
   // the answer goes out as Telegram HTML: everything escaped, only **bold** kept
   const fmt = (s: string) => {
     const t = esc(s.trim()).replace(/^#+\s*/gm, "").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").slice(0, 3800);
     return t ? "💬 " + t : "Не получилось ответить, спросите, пожалуйста, иначе.";
   };
-  const groq = await secret("groq_api_key");
-  if (groq) {
-    const model = await groqModel(PREFER_LLM, "llm");
-    const r = await fetch(`${GROQ}/chat/completions`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${groq}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        model, temperature: 0.3, max_tokens: 1500,
-        // the reasoning models think before answering, which helps with the arithmetic
-        ...(model.startsWith("openai/gpt-oss") ? { reasoning_effort: "medium" } : {}),
-        messages: [{ role: "system", content: ASK_SYSTEM + "\n\nДанные:\n" + data }, { role: "user", content: question }],
-      }),
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error("Groq: " + (j.error?.message ?? r.status));
-    return fmt(String(j.choices?.[0]?.message?.content ?? ""));
+  if (await secret("groq_api_key")) {
+    return fmt(await groqCall([{ role: "system", content: ASK_SYSTEM + "\n\nДанные:\n" + data }, ...history.slice(-10), { role: "user", content: question }], { maxTokens: 2000, temperature: 0.4 }));
   }
   const key = await secret("anthropic_api_key");
   if (!key) throw new Error("NO_AI_KEY");
@@ -900,39 +879,90 @@ async function ask(question: string, c: Ctx): Promise<string> {
 
 /* ---------- nutrition coach: interview, daily norm, weekly menu, shopping list, recipes ---------- */
 type Msg = { role: string; content: string };
-// one JSON answer from Groq; on a rate limit or an error the next model is tried (each model has its own free quota)
-async function groqJSON(messages: Msg[], maxTokens = 4000): Promise<Item> {
+// one answer from Groq. Each model has its own free per-minute quota, so on a rate limit or an error the next one is tried;
+// when all of them are busy the bot waits the few seconds Groq asks for and goes round once more
+async function groqCall(messages: Msg[], opt: { json?: boolean; maxTokens?: number; temperature?: number } = {}): Promise<string> {
   const key = await secret("groq_api_key");
   if (!key) throw new Error("NO_AI_KEY");
   await groqModel(PREFER_LLM, "llm");
   const models = PREFER_LLM.filter((m) => groqModels!.includes(m));
   let last = "";
-  for (const model of models.length ? models : PREFER_LLM.slice(0, 1)) {
-    const r = await fetch(`${GROQ}/chat/completions`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        model, temperature: 0.4, max_tokens: maxTokens, response_format: { type: "json_object" },
-        ...(model.startsWith("openai/gpt-oss") ? { reasoning_effort: "low" } : {}), messages,
-      }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (r.ok) {
-      try { return JSON.parse(j.choices?.[0]?.message?.content || "{}"); } catch { last = "bad json"; continue; }
+  for (let round = 0; round < 2; round++) {
+    let wait = 0;
+    for (const model of models.length ? models : PREFER_LLM.slice(0, 1)) {
+      const r = await fetch(`${GROQ}/chat/completions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          model, temperature: opt.temperature ?? 0.3, max_tokens: opt.maxTokens ?? 3000, messages,
+          ...(opt.json ? { response_format: { type: "json_object" } } : {}),
+          // the reasoning models think before answering, which helps with arithmetic and with long menus
+          ...(model.startsWith("openai/gpt-oss") ? { reasoning_effort: opt.json ? "low" : "medium" } : {}),
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      const content = j.choices?.[0]?.message?.content;
+      if (r.ok && content) {
+        if (!opt.json) return String(content);
+        try { JSON.parse(content); return String(content); } catch { last = "bad json"; continue; }
+      }
+      last = j.error?.message ?? String(r.status);
+      const m = /try again in ([\d.]+)s/.exec(last);
+      if (m) wait = Math.max(wait, Math.min(20, Number(m[1])));
     }
-    last = j.error?.message ?? String(r.status);
+    if (!wait) break;
+    await new Promise((ok) => setTimeout(ok, wait * 1000 + 300));
   }
   throw new Error("Groq: " + last);
 }
+const groqJSON = async (messages: Msg[], maxTokens = 4000): Promise<Item> => JSON.parse(await groqCall(messages, { json: true, maxTokens, temperature: 0.4 }));
 
+// one row per chat: the last turns of the conversation (convo) and, during the nutrition interview, its own history
 async function chatState(chat: number): Promise<Item | null> {
-  const { data } = await db.from("vl_bot_chat").select("mode, history, updated_at").eq("chat_id", chat).maybeSingle();
-  if (data && Date.now() - Date.parse(data.updated_at) > 864e5) { await setChat(chat, null); return null; }
+  const { data } = await db.from("vl_bot_chat").select("mode, history, convo, updated_at").eq("chat_id", chat).maybeSingle();
+  // an interview nobody answered for a day is over; a conversation older than a day starts afresh
+  if (data && Date.now() - Date.parse(data.updated_at) > 864e5) return { mode: "chat", history: [], convo: [] };
   return data;
 }
 async function setChat(chat: number, st: Item | null) {
-  if (!st) await db.from("vl_bot_chat").delete().eq("chat_id", chat);
-  else await db.from("vl_bot_chat").upsert({ chat_id: chat, ...st, updated_at: new Date().toISOString() });
+  await db.from("vl_bot_chat").upsert({ chat_id: chat, ...(st ?? { mode: "chat", history: [] }), updated_at: new Date().toISOString() });
+}
+const plain = (html: string) => html.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+async function remember(chat: number, user: string, bot: string) {
+  const st = await chatState(chat);
+  const convo = [...(st?.convo ?? []), { role: "user", content: user.slice(0, 1500) }, { role: "assistant", content: plain(bot).slice(0, 1500) }].slice(-12);
+  await db.from("vl_bot_chat").upsert({ chat_id: chat, convo, updated_at: new Date().toISOString() });
+}
+// the people linked to the bot by their Telegram first names, looked up once when missing
+async function people(): Promise<{ chat_id: number; name: string }[]> {
+  const { data } = await db.from("vl_tg_links").select("chat_id, name");
+  const out: { chat_id: number; name: string }[] = [];
+  for (const l of data ?? []) {
+    let name = text_(l.name);
+    if (!name) {
+      const g = await tg("getChat", { chat_id: l.chat_id });
+      name = text_(g.result?.first_name || g.result?.username);
+      if (name) await db.from("vl_tg_links").update({ name }).eq("chat_id", l.chat_id);
+    }
+    out.push({ chat_id: l.chat_id, name: name || "без имени" });
+  }
+  return out;
+}
+// a message to another linked person: what was said, the shopping list, today's menu or the bot's previous answer
+async function sendTo(r: Rec, chat: number, c: Ctx, history: Msg[]): Promise<string> {
+  const others = c.people.filter((p) => p.chat_id !== chat);
+  // with two people in the bot the other one is meant even when the name is said differently ("Насте" for "Анастасия")
+  const to = pick(others, r.to, (p) => p.name) ?? (others.length === 1 ? others[0] : undefined);
+  if (!to) return others.length ? `❓ Кому отправить? Подключены: ${others.map((p) => esc(p.name)).join(", ")}` : "❓ К боту пока подключён только этот чат. Пусть второй человек откроет ссылку «Подключить Telegram» с сайта.";
+  const lastBot = [...history].reverse().find((x) => x.role === "assistant")?.content ?? "";
+  const body = r.section === "shopping" ? shoppingText(c.shopping)
+    : r.section === "menu" ? (menuLine(c, today()).trim() || "Меню на сегодня пока нет.")
+    : r.text ? esc(r.text) : esc(lastBot);
+  if (!body.trim()) return "❓ Что передать?";
+  const me = c.people.find((p) => p.chat_id === chat)?.name;
+  await say(to.chat_id, `💬 <b>${esc(me || "Сообщение")}</b> через бота:\n\n${body}`);
+  const what = r.text ? `«${esc(r.text)}»` : r.section === "shopping" ? "список покупок" : r.section === "menu" ? "меню на сегодня" : "мой ответ";
+  return `📨 Отправлено → ${esc(to.name)}: ${what}`;
 }
 const lastWeight = (c: Ctx) => Number(c.weights[c.weights.length - 1]?.kg) || 0;
 
@@ -1213,8 +1243,11 @@ async function handle(u: any) {
       return say(chat, `Готово, бот подключён к <b>${esc(c.email)}</b> ✅\n\nНадиктуйте голосовое или напишите, например:\n${EXAMPLES}\n\nВсё появится на сайте: ${SITE}`);
     }
   }
-  const { data: link } = await db.from("vl_tg_links").select("email").eq("chat_id", chat).maybeSingle();
+  const { data: link } = await db.from("vl_tg_links").select("email, name").eq("chat_id", chat).maybeSingle();
   if (!link) return say(chat, `Это личный бот Vietnam Life. Чтобы подключить его, войдите на сайте ${SITE} → Настройки → «Подключить Telegram».`);
+  // the Telegram first name is how the others call this person ("отправь Насте")
+  const first = text_(m.from?.first_name);
+  if (first && first !== link.name) await db.from("vl_tg_links").update({ name: first }).eq("chat_id", chat);
   if (msg === "/start" || msg === "/help") {
     return say(chat, `Отправьте голосовое или текст — я заполню любой раздел сайта: расходы и доходы в любой валюте, обмены между счетами, коммуналку, календарь, заметки, цели, поездки, жильё, питание, здоровье, «Полезное» и настройки. Записываю вес. Могу отметить сделанное, перенести или удалить запись и ответить, сколько потрачено и сколько денег на счетах.
 
@@ -1231,25 +1264,34 @@ async function handle(u: any) {
     if (!input) return say(chat, "Пришлите голосовое или текст.");
     await tg("sendChatAction", { chat_id: chat, action: "typing" });
     const c = await context();
-    // during the nutrition interview every message is an answer to it ("стоп" ends it); a day-old interview is dropped
+    c.people = await people();
+    c.me = chat;
+    const heard = voice ? `🎙 «${esc(input)}»\n\n` : "";
+    // every reply is remembered with the message it answers, so the next message can refer to it
     const st = await chatState(chat);
-    if (st?.mode === "coach") return say(chat, (voice ? `🎙 «${esc(input)}»\n\n` : "") + await coachTurn(chat, input, c, st));
+    const history: Msg[] = st?.convo ?? [];
+    const answer = async (t: string, extra: Record<string, unknown> = {}) => {
+      await say(chat, heard + t, extra);
+      await remember(chat, input, t);
+    };
+    // during the nutrition interview every message is an answer to it ("стоп" ends it)
+    if (st?.mode === "coach") return answer(await coachTurn(chat, input, c, st));
     // the nutrition coach and the weekly menu are recognised without the AI, so they always start
     const quick = quickIntent(input, c);
-    const { records, question } = quick ? { records: [quick], question: "" } : await extract(input, c);
-    const heard = voice ? `🎙 «${esc(input)}»\n\n` : "";
+    const { records, question } = quick ? { records: [quick], question: "" } : await extract(input, c, history);
     if (!records.length) {
-      if (question) return say(chat, heard + question);
+      if (question) return answer(question);
       // nothing to record: answer it like a question instead of a dead end
       await tg("sendChatAction", { chat_id: chat, action: "typing" });
-      return say(chat, heard + await ask(input, c));
+      return answer(await ask(input, c, history));
     }
 
     // later: long extras (the shopping list) that go out as their own messages
     const done: string[] = [], answers: string[] = [], undo: string[] = [], later: string[] = [];
     for (const r of records) {
       if (r.kind === "report") { answers.push(await report(r, c)); continue; }
-      if (r.kind === "ask") { await tg("sendChatAction", { chat_id: chat, action: "typing" }); answers.push(await ask(r.text || input, c)); continue; }
+      if (r.kind === "ask") { await tg("sendChatAction", { chat_id: chat, action: "typing" }); answers.push(await ask(r.text || input, c, history)); continue; }
+      if (r.kind === "send") { answers.push(await sendTo(r, chat, c, history)); continue; }
       if (r.kind === "coach") { await tg("sendChatAction", { chat_id: chat, action: "typing" }); answers.push(await coachTurn(chat, input, c, null)); continue; }
       if (r.kind === "recipe") { await tg("sendChatAction", { chat_id: chat, action: "typing" }); answers.push(await recipeText(r.title || input, c)); continue; }
       if (r.kind === "shopping") { answers.push(shoppingText(c.shopping)); continue; }
@@ -1276,12 +1318,13 @@ async function handle(u: any) {
     await db.from("vl_bot_undo").delete().lt("created_at", new Date(Date.now() - 30 * 864e5).toISOString());
     const buttons = undo.map((id, i) => [{ text: undo.length > 1 ? `↩️ Отменить ${i + 1}` : "↩️ Отменить", callback_data: `x:${id}` }]);
     const reply = [done.length ? "Записал:\n" + done.join("\n") : "", ...answers].filter(Boolean).join("\n\n");
-    await say(chat, heard + reply, buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {});
+    await answer(reply, buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {});
     for (const x of later) await say(chat, x);
   } catch (e) {
     const err = String((e as Error).message);
     if (err === "NO_STT_KEY" || err === "NO_AI_KEY") return say(chat, "Бот ещё не до конца настроен: нужен бесплатный ключ Groq. Как только он будет добавлен, я начну понимать голосовые и текст.");
     console.error(e);
+    if (/rate limit|tokens per/i.test(err)) return say(chat, "Бесплатный ИИ сейчас перегружен, ничего не записал. Повторите, пожалуйста, через минуту.");
     return say(chat, "Что-то пошло не так, запись не сохранена. Попробуйте ещё раз.");
   }
 }
