@@ -16,9 +16,10 @@ const HEALTH = ["Врач", "Анализы", "Прививка", "Страхо�
 const UTIL: Record<string, string> = { electricity: "электричество", water: "вода", internet: "интернет", garbage: "вывоз мусора", service: "сервис (condo)" };
 const USEFUL: Record<string, string> = { sim: "Сим-карты", transport: "Транспорт", visa: "Визы", medicine: "Медицина", banks: "Банки", shopping: "Шопинг", hacks: "Лайфхаки", services: "Сервисы" };
 const SETTINGS: Record<string, string> = { name: "имя для приветствия", city: "город", temp: "температура, °C", feels: "ощущается как, °C", budget: "бюджет на месяц, ₫", kwhPrice: "цена кВт·ч, ₫", quote: "девиз под приветствием",
+  savePct: "процент на подушку безопасности (0–90)", budgetAuto: "бюджет автоматически по деньгам на счетах и доходам (да/нет)",
   weightGoal: "желаемый вес, кг", notifyMorning: "время утренней сводки (HH:MM или off)", notifyRemind: "время напоминания записать расходы (HH:MM или off)",
   notifyReport: "время вечернего отчёта (HH:MM или off)", notifyMonthly: "время отчёта за месяц 1-го числа (HH:MM или off)" };
-const NUM_SETTINGS = ["temp", "feels", "budget", "kwhPrice", "weightGoal"];
+const NUM_SETTINGS = ["temp", "feels", "budget", "kwhPrice", "weightGoal", "savePct"];
 // when the scheduled messages go out, unless changed in the settings
 const NOTIFY: Record<string, string> = { notifyMorning: "08:00", notifyRemind: "20:00", notifyReport: "21:30", notifyMonthly: "10:00" };
 // currency: symbol, default account name
@@ -198,7 +199,7 @@ async function revert(ops: Op[]) {
 
 // everything the AI needs to know to find existing records, and the numbers for reports
 type Ctx = {
-  usd: number; budget: number; kwhPrice: number; rates: Record<string, number>;
+  usd: number; budget: number; budgetGross: number; savePct: number; budgetSrc: string; kwhPrice: number; rates: Record<string, number>;
   goals: Item[]; notes: Item[]; events: Item[]; trips: Item[]; apartments: Item[]; expenses: Item[]; incomes: Item[]; transfers: Item[]; accounts: Item[];
   weights: Item[]; utilities: Item[]; settings: Item;
 };
@@ -208,13 +209,35 @@ async function context(): Promise<Ctx> {
   const list = (s: string): Item[] => (Array.isArray(by[s]?.items) ? by[s].items : []);
   const st = by.settings ?? {};
   const c: Ctx = {
-    usd: 0, budget: Number(st.budget) || 70000000, kwhPrice: Number(st.kwhPrice) || 3000, rates: { ...(st.rates ?? {}), ...(st.rate ? { USD: Number(st.rate) } : {}) },
+    usd: 0, budget: 0, budgetGross: 0, savePct: 0, budgetSrc: "", kwhPrice: Number(st.kwhPrice) || 3000, rates: { ...(st.rates ?? {}), ...(st.rate ? { USD: Number(st.rate) } : {}) },
     goals: list("goals"), notes: list("notes"), events: list("events"), trips: list("trips"), apartments: list("apartments"),
     expenses: list("expenses"), incomes: list("incomes"), transfers: list("transfers"), accounts: list("accounts"),
     weights: list("weights").sort((a, b) => (a.date < b.date ? -1 : 1)), utilities: list("utilities"), settings: st,
   };
   c.usd = (await vndRate("USD", c)) || 25000;
+  const b = await budgetOf(c, st);
+  c.budget = b.sum; c.budgetGross = b.gross; c.savePct = b.pct; c.budgetSrc = b.src;
   return c;
+}
+// the monthly budget, as on the site: automatic (budgetAuto) is the average income once two of the last three
+// full months have incomes, until then the money on all accounts plus what was spent this month;
+// savePct of it goes to the safety cushion, so sum is what can be spent
+async function budgetOf(c: Ctx, st: Item) {
+  const now = today().slice(0, 7);
+  let gross = Number(st.budget) || 70000000, src = "";
+  if (st.budgetAuto) {
+    const inc: number[] = [];
+    for (let m = prevMonth(now), n = 0; n < 3; n++, m = prevMonth(m)) inc.push(sumOf(c.incomes.filter((i) => String(i.date).startsWith(m)), "vnd"));
+    const got = inc.filter((v) => v > 0);
+    if (got.length >= 2) { gross = got.reduce((a, b) => a + b, 0) / got.length; src = `средний доход за ${got.length} мес.`; }
+    else if (c.accounts.length) {
+      gross = sumOf(c.expenses.filter((e) => String(e.date).startsWith(now)), "amount");
+      for (const { acc, bal } of balances(c)) gross += bal * (await vndRate(acc.cur, c));
+      src = "деньги на счетах";
+    }
+  }
+  const pct = Math.min(90, Math.max(0, Number(st.savePct) || 0));
+  return { sum: Math.round(gross * (1 - pct / 100)), gross: Math.round(gross), pct, src };
 }
 // ₫ for one unit of the currency; 0 when it is unknown
 async function vndRate(cur: string, c: Ctx): Promise<number> {
@@ -475,7 +498,8 @@ async function apply(r: Rec, c: Ctx): Promise<Done> {
       // say where the rate came from: the site's settings or today's market rate
       const src = c.rates[r.currency] ? "" : ", сегодняшний";
       return {
-        line: `💰 Доход ${cash(r.amount, r.currency)}${r.currency !== "VND" ? rate ? ` ≈ ${money(vnd)} (курс ${rateText(rate)}${src})` : " (курс неизвестен)" : ""} · ${esc(item.source)} · ${esc(a.acc.name)} · ${dshort(date)}`,
+        line: `💰 Доход ${cash(r.amount, r.currency)}${r.currency !== "VND" ? rate ? ` ≈ ${money(vnd)} (курс ${rateText(rate)}${src})` : " (курс неизвестен)" : ""} · ${esc(item.source)} · ${esc(a.acc.name)} · ${dshort(date)}` +
+          (c.savePct ? `\n💡 На подушку безопасности ${c.savePct}%: отложите ${cash(r.amount * c.savePct / 100, r.currency)}` : ""),
         ops,
       };
     }
@@ -642,8 +666,12 @@ async function apply(r: Rec, c: Ctx): Promise<Done> {
     case "setting": {
       if (!SETTINGS[r.key]) return { line: "❓ Такой настройки нет", ops: [] };
       const value = NUM_SETTINGS.includes(r.key) ? amount(r.value.replace(/[^\d.,]/g, "")) || r.amount
-        : NOTIFY[r.key] ? (/off|выкл|нет/i.test(r.value) ? "off" : hhmm(r.value) || NOTIFY[r.key]) : r.value;
-      return { line: `⚙️ ${cap(SETTINGS[r.key])}: ${esc(typeof value === "number" ? num(value) : value)}`, ops: [await setKey("settings", r.key, value)] };
+        : NOTIFY[r.key] ? (/off|выкл|нет/i.test(r.value) ? "off" : hhmm(r.value) || NOTIFY[r.key])
+        : r.key === "budgetAuto" ? !/нет|выкл|off|false|0/i.test(r.value) : r.value;
+      const ops = [await setKey("settings", r.key, value)];
+      // a budget said as a sum is a fixed one
+      if (r.key === "budget" && c.settings.budgetAuto) ops.push(await setKey("settings", "budgetAuto", false));
+      return { line: `⚙️ ${cap(SETTINGS[r.key])}: ${esc(typeof value === "number" ? num(value) : value === true ? "да" : value === false ? "нет" : value)}`, ops };
     }
   }
   return { line: "", ops: [] };
@@ -680,9 +708,15 @@ async function report(r: Rec, c: Ctx): Promise<string> {
   const cats: Record<string, number> = {};
   for (const e of exp) cats[e.cat] = (cats[e.cat] || 0) + (Number(e.amount) || 0);
   let out = `💸 Расходы за ${mlabel(m)}: <b>${money(spent)}</b>` + Object.entries(cats).sort((a, b) => b[1] - a[1]).map(([k, v]) => `\n• ${esc(k)}: ${money(v)}`).join("");
-  if (m === today().slice(0, 7)) out += `\n\nБюджет ${money(c.budget)}, ${spent <= c.budget ? "осталось " + money(c.budget - spent) : "перерасход " + money(spent - c.budget)}`;
+  if (m === today().slice(0, 7)) out += `\n\nБюджет на траты ${money(c.budget)}${budgetNote(c)}, ${spent <= c.budget ? "осталось " + money(c.budget - spent) : "перерасход " + money(spent - c.budget)}`;
   return out;
 }
+
+// where the budget comes from and how much of it goes to the cushion, e.g. " (деньги на счетах, 20% — 9 000 000 ₫ на подушку)"
+const budgetNote = (c: Ctx) => {
+  const parts = [c.budgetSrc, c.savePct ? `${c.savePct}% — ${money(c.budgetGross - c.budget)} на подушку` : ""].filter(Boolean);
+  return parts.length ? ` (${parts.join(", ")})` : "";
+};
 
 async function balancesText(c: Ctx): Promise<string> {
   const bals = balances(c);
@@ -750,7 +784,8 @@ async function monthReport(c: Ctx, m: string): Promise<string> {
   const util = c.utilities.find((u) => u.month === m);
   const top = [...s.list].sort((a, b) => b.amount - a.amount).slice(0, 3);
   let out = `📅 <b>Итоги: ${mlabel(m)}</b>\n\n💰 Доходы: <b>${money(got)}</b>\n💸 Расходы: <b>${money(s.total)}</b>${change(s.total, p.total)}\n${got >= s.total ? "📈 В плюсе на" : "📉 В минусе на"} ${money(Math.abs(got - s.total))}`;
-  out += `\n\nБюджет ${money(c.budget)}: ${s.total <= c.budget ? "уложились, осталось " + money(c.budget - s.total) : "перерасход " + money(s.total - c.budget)}`;
+  out += `\n\nБюджет на траты ${money(c.budget)}: ${s.total <= c.budget ? "уложились, осталось " + money(c.budget - s.total) : "перерасход " + money(s.total - c.budget)}`;
+  if (c.savePct && got) out += `\n💡 На подушку ${c.savePct}% от доходов: ${money(got * c.savePct / 100)}`;
   if (s.cats.length) out += `\n\nПо категориям:${catLines(s.cats, 8)}`;
   if (top.length) out += "\n\nКрупнейшие траты:" + top.map((e) => `\n• ${dshort(e.date)} ${esc(e.note || e.cat)} — ${money(e.amount)}`).join("");
   if (util) out += `\n\n🔌 Коммуналка: ${money(Object.keys(UTIL).reduce((a, k) => a + (Number(util[k]) || 0), 0))}${util.kwh ? ", " + num(util.kwh) + " кВт·ч" : ""}`;
@@ -774,7 +809,7 @@ async function digest(c: Ctx): Promise<string> {
   for (const { acc, bal } of balances(c)) bals.push(`${acc.name}: ${Math.round(bal * 100) / 100} ${acc.cur} (≈ ${Math.round(bal * (await vndRate(acc.cur, c)))} ₫)`);
   const apt = c.apartments.find((a) => a.current);
   const ev = c.events.filter((e) => e.date >= addDays(day, -7) && e.date <= addDays(day, 30)).sort((a, b) => (a.date + a.from < b.date + b.from ? -1 : 1));
-  return `Сегодня ${day} (${DAYS_FULL[todayIdx()]}). Бюджет на месяц ${c.budget} ₫. Курсы: 1 $ = ${c.usd} ₫${Object.entries(c.rates).filter(([k]) => k !== "USD").map(([k, v]) => `, 1 ${k} = ${v} ₫`).join("")}.
+  return `Сегодня ${day} (${DAYS_FULL[todayIdx()]}). Бюджет на траты в этом месяце ${c.budget} ₫${budgetNote(c)}; всего ${c.budgetGross} ₫; на подушку безопасности откладывают ${c.savePct}%. Курсы: 1 $ = ${c.usd} ₫${Object.entries(c.rates).filter(([k]) => k !== "USD").map(([k, v]) => `, 1 ${k} = ${v} ₫`).join("")}.
 Расходы и доходы по месяцам (₫):
 ${byMonth.join("\n")}
 Все расходы этого месяца (дата, сумма ₫, категория, описание):
@@ -880,7 +915,7 @@ function dayReport(c: Ctx, day: string): string {
   let out = `🌙 <b>Итоги дня, ${dshort(day)}</b>\n\n💸 Потрачено: <b>${money(s.total)}</b>${catLines(s.cats, 4)}`;
   if (inc) out += `\n💰 Доходы: ${money(inc)}`;
   const left = c.budget - mon.total;
-  out += `\n\nЗа ${MONTHS[+m.slice(5) - 1]}: ${money(mon.total)} из ${money(c.budget)} (${c.budget ? Math.round(mon.total / c.budget * 100) : 0}%)`;
+  out += `\n\nЗа ${MONTHS[+m.slice(5) - 1]}: ${money(mon.total)} из ${money(c.budget)} на траты (${c.budget ? Math.round(mon.total / c.budget * 100) : 0}%)`;
   out += left >= 0 ? (daysLeft > 0 ? `, можно тратить ≈ ${money(left / daysLeft)} в день` : "") : `, перерасход ${money(-left)}`;
   if (done) out += `\n✅ Сделано дел: ${done}`;
   out += tomorrow.length ? "\n\n📅 Завтра:\n" + tomorrow.map((e) => `• ${e.from ? e.from + " " : ""}${esc(e.title)}`).join("\n") : "\n\n📅 На завтра в календаре ничего нет.";

@@ -442,6 +442,7 @@ body{margin:0}
 .lb .close{right:16px;top:16px}
 .lb .cnt{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);color:#fff;font-size:13px;opacity:.85}
 @media (max-width:560px){.lb .prev{left:8px}.lb .next{right:8px}.lb img{max-width:100vw;border-radius:0}}
+.field input:disabled{opacity:.5;cursor:not-allowed}
 </style>
 </head>
 <body>
@@ -733,6 +734,19 @@ const balances=()=>S.accounts.map(a=>{
   return {acc:a,bal};
 });
 const accById=id=>S.accounts.find(a=>a.id===id);
+// the monthly budget. Automatic (budgetAuto): once incomes are recorded in at least two of the last three full months,
+// their average; until then the money on all accounts plus what was already spent this month. Otherwise the fixed sum.
+// savePct of it goes to the safety cushion, so sum is what can be spent. The bot counts it the same way.
+function budgetInfo(){
+  const now=mkey(new Date());let gross=Number(S.settings.budget)||0,src='';
+  if(S.settings.budgetAuto){
+    const inc=[1,2,3].map(n=>shiftM(now,-n)).map(m=>S.incomes.filter(i=>String(i.date).startsWith(m)).reduce((s,i)=>s+(Number(i.vnd)||0),0)).filter(v=>v>0);
+    if(inc.length>=2){gross=inc.reduce((a,b)=>a+b,0)/inc.length;src='средний доход за '+inc.length+' мес.'}
+    else if(S.accounts.length){loadLive();gross=balances().reduce((s,b)=>s+b.bal*rateOf(b.acc.cur),0)+sum(monthExp(now));src='деньги на счетах'}
+  }
+  const p=Math.min(90,Math.max(0,Number(S.settings.savePct)||0)),save=Math.round(gross*p/100);
+  return {sum:Math.round(gross)-save,gross:Math.round(gross),save,pct:p,src};
+}
 // the account for a currency: the first one in it, or a new one named after the currency
 function accFor(c){let a=S.accounts.find(x=>x.cur===c);if(!a){a={id:uid(),name:CUR[c][1],cur:c,start:0};S.accounts.push(a);save('accounts')}return a}
 // 3D icon (Blender render) for the dashboard stat cards, falls back to the line icon
@@ -784,7 +798,7 @@ function home(){
   const diff=prev?Math.round((tot-prev)/prev*100):0;
   const spark=[];for(let i=8;i>=0;i--)spark.push(sum(monthExp(shiftM(mk,-i))));
   const smax=Math.max(...spark,1);
-  const budget=Number(S.settings.budget)||0,left=budget-tot;
+  const bi=budgetInfo(),budget=bi.sum,left=budget-tot;
   const t=new Date(),dim=new Date(t.getFullYear(),t.getMonth()+1,0).getDate(),dleft=dim-t.getDate()+1;
   const goal=S.goals.find(g=>g.featured)||S.goals[0];
   const nt=nextTrip();
@@ -876,7 +890,7 @@ function expensesPage(){
   <div class="kpis"><div class="card kpi"><small>Итого за ${mlabel(k).toLowerCase()}</small><b class="num">${vnd(tot)}</b><span class="muted num">${usd(tot)}</span></div>
     <div class="card kpi"><small>Записей</small><b class="num">${list.length}</b></div>
     <div class="card kpi"><small>Средний расход в день</small><b class="num">${vnd(tot/(k===mkey(new Date())?new Date().getDate():new Date(+k.slice(0,4),+k.slice(5),0).getDate()))}</b></div>
-    <div class="card kpi"><small>Бюджет на месяц</small><b class="num">${vnd(S.settings.budget)}</b><span class="muted">использовано ${pct(sum(monthExp(k)),S.settings.budget)}%</span></div></div>
+    ${(()=>{const b=budgetInfo();return `<div class="card kpi"><small>Бюджет на траты</small><b class="num">${vnd(b.sum)}</b><span class="muted">использовано ${pct(sum(monthExp(k)),b.sum)}%${b.src?' · '+b.src:''}${b.pct?' · '+b.pct+'% ('+vnd(b.save)+') на подушку':''}</span></div>`})()}</div>
   <div class="card">${list.length?`<div class="tbl-wrap"><table><thead><tr><th>Дата</th><th>Категория</th><th>Описание</th><th class="r">Сумма</th><th class="r">В $</th><th></th></tr></thead><tbody>
   ${list.map(e=>`<tr><td class="num">${dshort(e.date)}</td><td><span class="dot" style="background:${catColor(e.cat)}"></span>${esc(e.cat)}</td><td>${esc(e.note)}${e.cur&&e.cur!=='VND'&&e.orig?`<br><small class="muted">списано ${cash(e.orig,e.cur)}${accById(e.acc)?' · '+esc(accById(e.acc).name):''}</small>`:''}</td><td class="r num"><b>${vnd(e.amount)}</b></td><td class="r num muted">${fmt(e.amount/S.settings.rate)} $</td><td><div class="acts"><button data-act="editExpense" data-id="${e.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delExpense" data-id="${e.id}" aria-label="Удалить">${ic('trash')}</button></div></td></tr>`).join('')}
   </tbody></table></div>`:'<div class="empty">За этот месяц расходов нет. Нажмите «Добавить расход», чтобы записать первый.</div>'}</div>`;
@@ -1109,8 +1123,10 @@ function settingsPage(){
   <label class="field">Температура, °C<input name="temp" id="s-temp" type="number" value="${esc(s.temp)}"></label>
   <label class="field">Ощущается как, °C<input name="feels" id="s-feels" type="number" value="${esc(s.feels)}"></label>
   <label class="field">Курс: донгов за 1 $<input name="rate" id="s-rate" type="number" value="${esc(s.rate)}"></label>
-  <label class="field">Бюджет на месяц, ₫<input name="budget" id="s-budget" type="number" value="${esc(s.budget)}"></label>
+  <label class="field">Бюджет на месяц, ₫<input name="budget" id="s-budget" type="number" value="${esc(s.budget)}" ${s.budgetAuto?'disabled':''}></label>
+  <label class="field">Откладывать на подушку, %<input name="savePct" id="s-save" type="number" min="0" max="90" value="${esc(s.savePct||0)}"></label>
   <label class="field">Цена кВт·ч, ₫<input name="kwhPrice" id="s-kwh" type="number" value="${esc(s.kwhPrice)}"></label>
+  <label class="field full" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" name="budgetAuto" id="s-auto" ${s.budgetAuto?'checked':''}>Бюджет автоматически: по деньгам на счетах, а когда наберутся доходы за 2–3 месяца — по среднему доходу</label>
   <label class="field full">Девиз под приветствием<input name="quote" id="s-quote" value="${esc(s.quote)}"></label>
   <div class="full"><button class="btn" type="submit">${ic('check')} Сохранить</button></div></form></div>
   ${sb?accountCard():''}
@@ -1200,7 +1216,8 @@ function act(a,el){
   switch(a){
   case 'day':U.day=+el.dataset.i;render();break;
   case 'meal':{const d=+el.dataset.d,j=+el.dataset.j;const m=S.meals.days[d].items[j];form(MEALT[j]+', '+S.meals.days[d].day,[{k:'name',l:'Блюдо',req:1,full:1},{k:'desc',l:'Дополнение',full:1},{k:'kcal',l:'Калории',t:'number'}],m,o=>{S.meals.days[d].items[j]=o;save('meals')});break}
-  case 'addExpense':form('Новый расход',expenseF(),{date:iso(new Date()),cat:U.expCat||'Питание'},o=>{upsert('expenses',{id:uid(),...expenseAcc(o)});toast('Расход добавлен')});break;
+  // paid from the dong account by default, so the money on the accounts stays right
+  case 'addExpense':form('Новый расход',expenseF(),{date:iso(new Date()),cat:U.expCat||'Питание',acc:(S.accounts.find(a=>a.cur==='VND')||{}).id||''},o=>{upsert('expenses',{id:uid(),...expenseAcc(o)});toast('Расход добавлен')});break;
   case 'editExpense':{const e=find('expenses',id);form('Расход',expenseF(),e,o=>upsert('expenses',{...e,...expenseAcc(o)}),()=>remove('expenses',id));break}
   case 'addIncome':form('Новый доход',incomeF(),{date:iso(new Date()),cur:'RUB',source:'Зарплата'},o=>{if(o.cur!=='VND'&&!rateOf(o.cur)){toast('Курс '+o.cur+' неизвестен: задайте его в блоке «Курсы валют»');return}upsert('incomes',{id:uid(),...incomeVnd(o)});toast('Доход добавлен')});break;
   // an edited income keeps the rate it was saved with, unless its currency changed
@@ -1283,7 +1300,7 @@ function bind(){
   rootEl.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='newnote'){e.preventDefault();act('addNote',e.target)}if(e.key==='Enter'&&e.target.id&&e.target.id.startsWith('ck-')){e.preventDefault();act('addCheck',{dataset:{id:e.target.id.slice(3)}})}});
   rootEl.addEventListener('submit',e=>{if(e.target.id==='loginf'){e.preventDefault();const email=e.target.email.value.trim();const btn=e.target.querySelector('button');btn.disabled=true;
       sb.auth.signInWithOtp({email,options:{emailRedirectTo:location.origin+location.pathname}}).then(({error})=>{btn.disabled=false;toast(error?(/closed|закрыта|Database error/i.test(error.message)?'Этого адреса нет в списке участников':'Ошибка: '+error.message):'Ссылка для входа отправлена на '+email)});return}
-    if(e.target.id==='setf'){e.preventDefault();const fd=new FormData(e.target);const o={};fd.forEach((v,k)=>o[k]=['temp','feels','rate','budget','kwhPrice'].includes(k)?Number(v):v);S.settings={...S.settings,...o};save('settings');toast('Сохранено')}
+    if(e.target.id==='setf'){e.preventDefault();const fd=new FormData(e.target);const o={};fd.forEach((v,k)=>o[k]=['temp','feels','rate','budget','kwhPrice','savePct'].includes(k)?Number(v):v);o.budgetAuto=fd.has('budgetAuto');S.settings={...S.settings,...o};save('settings');toast('Сохранено')}
     // currency rates: the dollar is the old "rate" setting, the rest live in settings.rates; an empty field means today's rate
     if(e.target.id==='ratef'){e.preventDefault();const fd=new FormData(e.target);const rates={};fd.forEach((v,k)=>{if(k!=='USD'&&Number(v))rates[k]=Number(v)});
       S.settings={...S.settings,rates,rate:Number(fd.get('USD'))||S.settings.rate};save('settings');toast('Курсы сохранены')}});
