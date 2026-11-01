@@ -68,7 +68,6 @@ const MGEN=['января','февраля','марта','апреля','мая'
 const WD=['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
 const WDL=['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
 const EVT={sport:['yoga','Спорт'],work:['briefcase','Работа'],flight:['plane','Перелёт'],sight:['sight','Экскурсия'],beach:['umbrella','Отдых'],health:['heart','Здоровье'],other:['star','Другое']};
-const EVTCOL={flight:'#e8484a',sight:'#2f9e5b',sport:'#2f9e5b',beach:'#3c6b48',work:'#555',health:'#e8484a',other:'#6b62d9'};
 const UTIL=[['electricity','Электричество','bolt'],['water','Вода','drop'],['internet','Интернет','wifi'],['garbage','Вывоз мусора','recycle'],['service','Сервис (condo)','wrench']];
 const USEFUL=[['sim','Сим-карты','sim'],['transport','Транспорт','bus'],['visa','Визы','visa'],['medicine','Медицина','heart'],['banks','Банки','bank'],['shopping','Шопинг','bag'],['hacks','Лайфхаки','spark'],['services','Сервисы','grid']];
 const GOAL_ICONS=['shield','mountain','camera','book','plane','house','heart','star','wallet'];
@@ -207,20 +206,19 @@ function shell(){
   <aside class="side" id="side">
     <div class="brand">${IMG.logo?`<img src="${IMG.logo}" alt="">`:''}<b>Vietnam Life</b><small>Plan. Live. Explore.</small></div>
     <nav class="nav">${NAV.map(n=>`<a href="#${n[0]}" class="${U.route===n[0]?'on':''}">${ic(n[2])}<span>${n[1]}</span></a>`).join('')}</nav>
-    <div class="side-foot">${IMG.palms?`<img src="${IMG.palms}" alt="">`:''}<div class="quote"><b>Хорошая жизнь</b>не случается случайно,<br>она планируется 🌴</div></div>
+    <div class="side-foot">${IMG.palms?`<img src="${IMG.palms}" alt="">`:''}</div>
   </aside>
   <main class="main">
     <header class="hero" style="background-image:url('${IMG.hero||''}')">
       <button class="burger" id="burger" aria-label="Меню">${ic('menu')}</button>
-      <div class="hello"><h1>Xin chào${s.name?', '+esc(s.name):''}! ${ic('sun','sun')}</h1><p>Хорошего дня во Вьетнаме!<br>${esc(s.quote)}</p></div>
+      <div class="hello"><h1>Xin chào${s.name?', '+esc(s.name):''}</h1><p>${esc(s.city)}, ${dstr}<br>${esc(s.quote)}</p></div>
       <div class="hero-r">
         <div class="hero-row">
-          <div class="wx"><svg class="ic" viewBox="0 0 48 48"><circle cx="20" cy="18" r="8" fill="#ffd54a"/><g stroke="#ffd54a" stroke-width="2.4" stroke-linecap="round"><path d="M20 4v3M8 8l2 2M32 8l-2 2M6 18h3"/></g><path d="M14 38h22a7 7 0 0 0 0-14 9 9 0 0 0-17 3 6 6 0 0 0-5 11z" fill="#fff"/></svg>
-            <div><span class="t">${esc(s.temp)}°</span> &nbsp;${esc(s.city)}<br>Сейчас солнечно<br>Ощущается как ${esc(s.feels)}°</div></div>
-          <div class="dt"><b>${dstr}</b>Жизнь прекрасна здесь 🌴</div>
+          <div class="wx">
+            <div><span class="t">${esc(s.temp)}°</span><br>ощущается как ${esc(s.feels)}°</div></div>
           <div class="avatar">${IMG.avatar?`<img src="${IMG.avatar}" alt="">`:''}${ic('chevd')}</div>
         </div>
-        <div class="search">${ic('search')}<input id="q" placeholder="Новые места. Новые цели. Та же мы, только счастливее 💚" value="${esc(U.q)}" autocomplete="off"><div id="sres"></div></div>
+        <div class="search">${ic('search')}<input id="q" placeholder="Поиск" value="${esc(U.q)}" autocomplete="off"><div id="sres"></div></div>
       </div>
     </header>
     <div class="page" id="page"></div>
@@ -237,8 +235,6 @@ function donutSVG(parts,size,w){
 function home(){
   const mk=mkey(new Date()),cur=monthExp(mk),tot=sum(cur),prev=sum(monthExp(shiftM(mk,-1)));
   const diff=prev?Math.round((tot-prev)/prev*100):0;
-  const spark=[];for(let i=8;i>=0;i--)spark.push(sum(monthExp(shiftM(mk,-i))));
-  const smax=Math.max(...spark,1);
   const bi=budgetInfo(),budget=bi.sum,left=budget-tot;
   const t=new Date(),dim=new Date(t.getFullYear(),t.getMonth()+1,0).getDate(),dleft=dim-t.getDate()+1;
   const goal=S.goals.find(g=>g.featured)||S.goals[0];
@@ -266,10 +262,10 @@ function home(){
   return `
   <div class="row r4">
     <div class="card stat">${ib3("wallet","g")}<div class="body"><h4>Расходы в этом месяце</h4><div class="big num">${vnd(tot)}</div><div class="usd num">${usd(tot)}</div>
-      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;margin-top:4px"><div style="font-size:11px;padding-bottom:2px">${prev?`<b class="${diff>0?'up':'down'}">${ic(diff>0?'upa':'down')} ${diff>0?'+':''}${diff}%</b> <span class="muted" style="color:#444">к прошлому месяцу</span>`:'<span class="muted">Нет данных за прошлый месяц</span>'}</div>
-      <div class="spark">${spark.map(v=>`<i style="height:${Math.max(4,v/smax*40)}px"></i>`).join('')}</div></div></div></div>
+      <div style="margin-top:12px"><div style="font-size:11px">${prev?`<b class="${diff>0?'up':'down'}">${ic(diff>0?'upa':'down')} ${diff>0?'+':''}${diff}%</b> <span class="muted" style="color:#444">к прошлому месяцу</span>`:'<span class="muted">Нет данных за прошлый месяц</span>'}</div>
+      </div></div></div>
     <div class="card stat">${ib3("clock","o")}<div class="body"><h4>Осталось до конца месяца</h4><div class="big num" style="${left<0?'color:var(--red)':''}">${vnd(left)}</div><div class="usd num">${usd(left)}</div>
-      <div style="display:flex;align-items:center;gap:10px;margin-top:14px"><div class="bar" style="flex:1"><i style="width:${budget?Math.max(0,100-pct(tot,budget)):0}%"></i></div><span style="font-size:11px;color:#444">${dleft} ${plural(dleft,'день','дня','дней')}</span></div></div></div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:12px"><div class="bar" style="flex:1"><i style="width:${budget?Math.max(0,100-pct(tot,budget)):0}%"></i></div><span style="font-size:11px;color:#444">${dleft} ${plural(dleft,'день','дня','дней')}</span></div></div></div>
     <div class="card stat">${ib3("target","r")}<div class="body"><h4>Моя цель</h4>${goal?`<div style="font-size:12.5px;margin:10px 0 8px">${esc(goal.title)}</div><div class="num" style="font-size:11.5px">${fmt(goal.saved)} $ / ${fmt(goal.target)} $</div>
       <div style="display:flex;align-items:center;gap:10px;margin-top:8px"><div class="bar" style="flex:1"><i style="width:${pct(goal.saved,goal.target)}%"></i></div><span style="font-size:10px;color:#666">${pct(goal.saved,goal.target)}%</span></div>`:'<div class="muted" style="margin-top:10px">Добавьте первую цель</div>'}</div>
       ${goal?`<img class="thumb" src="${imgFor(goal.img||'bali')}" alt="">`:''}</div>
@@ -287,7 +283,7 @@ function home(){
       <div class="thumbs">${['apt1','apt2','apt3','apt4'].map(k=>`<img src="${imgFor(k)}" alt="">`).join('')}</div>`:'<div class="empty">Добавьте квартиру в разделе «Жилье»</div>'}
       <div style="text-align:right"><a class="link" href="#housing">Все квартиры ${ic('arrow')}</a></div></div>
     <div class="card"><div class="chd"><div class="ib p">${ic('bolt')}</div><h3>Коммуналка</h3><div class="sp"><select class="sel" data-act="utilMonth" aria-label="Месяц">${us.slice().reverse().map(u=>`<option value="${u.month}" ${u.month===um?'selected':''}>${mlabel(u.month)}</option>`).join('')||'<option>Нет данных</option>'}</select></div></div>
-      ${uc?`<div class="util"><div><div class="big num" style="font-size:20px;font-weight:700">${vnd(ut)}</div><div class="usd num" style="font-size:11.5px;color:#555">${usd(ut)}</div>
+      ${uc?`<div class="util"><div><div class="big num" style="font-size:20px;font-weight:600">${vnd(ut)}</div><div class="usd num" style="font-size:11.5px;color:#555">${usd(ut)}</div>
         <div style="font-size:11px;margin-top:6px">${upd!==null?`<b class="${upd>0?'up':'down'}">${ic(upd>0?'upa':'down')} ${upd>0?'+':''}${upd}%</b> <span style="color:#444;font-size:10px">чем в прошлом месяце</span>`:''}</div>
         <div class="ubars"><div class="uaxis">${[4,3,2,1,0].map(i=>`<span>${i?Math.round(ustep*i/1e6)+'M':'0'}</span>`).join('')}</div>
         <div class="ucols">${last5.map(u=>`<div class="${u.month===um?'on':''}"><i style="height:${utilTotal(u)/(ustep*4)*100}%"></i><span>${mshort(u.month)}</span></div>`).join('')}</div></div></div>
@@ -300,7 +296,7 @@ function home(){
       <div class="days">${(S.meals.days||[]).map((d,i)=>`<button data-act="day" data-i="${i}" class="${i===U.day?'on':''}">${d.day}</button>`).join('')}</div>
       ${day?`<div class="meals">${day.items.map((m,j)=>`<button class="meal" data-act="meal" data-d="${U.day}" data-j="${j}"><img src="${imgFor('food'+(j+1))}" alt=""><b>${MEALT[j]}</b><span>${esc(m.name)}${m.desc?'<br>'+esc(m.desc):''}</span></button>`).join('')}</div>`:'<div class="empty">План питания пуст</div>'}</div>
     <div class="card"><div class="chd"><div class="ib r">${ic('calendar')}</div><div><h3>Календарь</h3><div class="sub">${mlabel(mk)}</div></div><div class="sp"><button class="btn" data-act="addEvent">${ic('plus')} Добавить</button></div></div>
-      ${evs.length?evs.map(e=>{const d=parse(e.date);const [i]=EVT[e.type]||EVT.other;return `<div class="ev"><div class="d"><b>${d.getDate()}</b><small>${WD[d.getDay()]}</small></div><span style="color:${EVTCOL[e.type]||'#555'}">${ic(i)}</span><div class="t">${esc(e.title)}<small>${e.from?esc(e.from)+(e.to?' – '+esc(e.to):''):'На весь день'}</small></div><button class="chk ${e.done?'on':''}" data-act="toggleEvent" data-id="${e.id}" aria-label="Отметить">${e.done?ic('check'):''}</button></div>`}).join(''):'<div class="empty">Ближайших дел нет</div>'}
+      ${evs.length?evs.map(e=>{const d=parse(e.date);const [i]=EVT[e.type]||EVT.other;return `<div class="ev"><div class="d"><b>${d.getDate()}</b><small>${WD[d.getDay()]}</small></div><span style="color:var(--muted)">${ic(i)}</span><div class="t">${esc(e.title)}<small>${e.from?esc(e.from)+(e.to?' – '+esc(e.to):''):'На весь день'}</small></div><button class="chk ${e.done?'on':''}" data-act="toggleEvent" data-id="${e.id}" aria-label="Отметить">${e.done?ic('check'):''}</button></div>`}).join(''):'<div class="empty">Ближайших дел нет</div>'}
       <div style="text-align:right;margin-top:2px"><a class="link" href="#calendar">Все события ${ic('arrow')}</a></div></div>
     <div class="card"><div class="chd"><div class="ib b">${ic('plane')}</div><div><h3>Путешествия</h3><div class="sub">Ближайшие поездки</div></div><a class="link sp" href="#trips">Все поездки ${ic('arrow')}</a></div>
       ${trips.length?`<div class="trips">${trips.map((t,i)=>`<a class="trip" href="#trips"><img src="${imgFor(t.img||'trip1')}" alt=""><div class="tx"><b>${esc(t.city)}</b><span>${i===0?dshort(t.from)+' – '+dshort(t.to)+' '+parse(t.from).getFullYear():MONTHS[parse(t.from).getMonth()]+' '+parse(t.from).getFullYear()}</span></div>${i===0?`<span class="badge">${tripBadge(t)}</span>`:''}</a>`).join('')}</div>
@@ -309,7 +305,7 @@ function home(){
 
   <div class="row r3c">
     <div class="card"><div class="chd"><div class="ib r">${ic('target')}</div><h3>Цели</h3><span style="font-size:10px;color:#666">${S.goals.length} ${plural(S.goals.length,'активная цель','активные цели','активных целей')}</span><a class="link sp" href="#goals">Все цели ${ic('arrow')}</a></div>
-      <div class="goals">${goals.map(g=>`<a class="goal" href="#goals"><div class="ib" style="background:${g.color}22;color:${g.color}">${ic(g.icon)}</div><div><div class="top"><span title="${esc(g.title)}">${esc(g.title)}</span><div class="bar"><i style="width:${pct(g.saved,g.target)}%;background:${g.color}"></i></div><em>${pct(g.saved,g.target)}%</em></div><div class="amt num">${fmt(g.saved)} $ / ${fmt(g.target)} $</div></div></a>`).join('')||'<div class="empty">Целей пока нет</div>'}</div></div>
+      <div class="goals">${goals.map(g=>`<a class="goal" href="#goals"><div class="ib" >${ic(g.icon)}</div><div><div class="top"><span title="${esc(g.title)}">${esc(g.title)}</span><div class="bar"><i style="width:${pct(g.saved,g.target)}%;background:var(--green2)"></i></div><em>${pct(g.saved,g.target)}%</em></div><div class="amt num">${fmt(g.saved)} $ / ${fmt(g.target)} $</div></div></a>`).join('')||'<div class="empty">Целей пока нет</div>'}</div></div>
     <div class="card"><div class="chd"><div class="ib y">${ic('bulb')}</div><h3>Полезное</h3></div>
       <div class="tiles">${USEFUL.map(([k,l,i])=>`<button class="tile" data-act="useful" data-k="${k}">${ic(i)}${l}</button>`).join('')}</div></div>
     <div class="card"><div class="chd"><div class="ib" style="background:#f0efe9;color:#5b615a">${ic('note')}</div><h3>Заметки</h3><a class="link sp" href="#notes">Все заметки ${ic('arrow')}</a></div>
@@ -356,7 +352,7 @@ function moneyPage(){
     <div class="card kpi"><small>Всего на счетах</small><b class="num">${vnd(total)}</b><span class="muted">${S.accounts.length} ${plural(S.accounts.length,'счёт','счёта','счетов')}</span></div></div>
   <div class="gridc">${bals.map(({acc:a,bal})=>`<div class="card"><div class="chd"><div class="ib g">${ic('wallet')}</div><div><h3>${esc(a.name)}</h3><div class="sub">${(CUR[a.cur]||CUR.VND)[1]} · ${esc(a.cur)}</div></div>
     <div class="acts sp"><button data-act="editAccount" data-id="${a.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delAccount" data-id="${a.id}" aria-label="Удалить">${ic('trash')}</button></div></div>
-    <div class="num" style="font-size:20px;font-weight:700">${cash(bal,a.cur)}</div>
+    <div class="num" style="font-size:20px;font-weight:600">${cash(bal,a.cur)}</div>
     <div class="muted num" style="font-size:11.5px;margin-top:4px">${a.cur==='VND'?usd(bal):rateOf(a.cur)?'≈ '+vnd(bal*rateOf(a.cur))+' · '+rateNote(a.cur):'курс не задан'}</div></div>`).join('')||'<div class="card empty">Счетов пока нет. Добавьте счёт или запишите доход: счёт в его валюте появится сам.</div>'}</div>
   <div class="card"><div class="chd"><h3>Доходы за ${mlabel(k).toLowerCase()}</h3></div>${inc.length?`<div class="tbl-wrap"><table><thead><tr><th>Дата</th><th>Источник</th><th>Счёт</th><th class="r">Сумма</th><th class="r">В донгах</th><th></th></tr></thead><tbody>
   ${inc.map(i=>`<tr><td class="num">${dshort(i.date)}</td><td>${esc(i.source)}</td><td>${accN(i.acc)}</td><td class="r num"><b>${cash(i.amount,i.cur)}</b></td><td class="r num muted">${vnd(i.vnd)}</td><td><div class="acts"><button data-act="editIncome" data-id="${i.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delIncome" data-id="${i.id}" aria-label="Удалить">${ic('trash')}</button></div></td></tr>`).join('')}
@@ -405,7 +401,7 @@ function housingPage(){
   <div class="gridc">${list.map(a=>{const ph=aptPhotos(a);return `<div class="card apt-card">${ph.length?`<button class="cover-btn" data-act="gallery" data-id="${a.id}" data-i="0" aria-label="Открыть фото"><img class="cover" src="${imgFor(ph[0])}" alt=""><span class="gcount">${ph.length} фото</span></button>
     ${ph.length>1?`<div class="gthumbs">${ph.slice(1,6).map((k,j)=>`<button data-act="gallery" data-id="${a.id}" data-i="${j+1}" aria-label="Фото ${j+2}"><img src="${imgFor(k)}" alt="" loading="lazy">${j===4&&ph.length>6?`<em>+${ph.length-6}</em>`:''}</button>`).join('')}</div>`:''}`:`<img class="cover" src="${imgFor(a.img||'apt1')}" alt="">`}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px"><b style="font-size:14px">${esc(a.city)}, ${esc(a.name)}</b>${a.current?'<span class="chip g">Текущая</span>':''}</div>
-    <div class="num" style="font-size:16px;font-weight:700;margin:4px 0">${vnd(a.price)} <span class="muted" style="font-size:11px;font-weight:400">/ месяц</span></div>
+    <div class="num" style="font-size:16px;font-weight:600;margin:4px 0">${vnd(a.price)} <span class="muted" style="font-size:11px;font-weight:400">/ месяц</span></div>
     <div class="apt-meta"><span>${ic('bed')}${a.rooms} комн.</span><span>${ic('area')}${a.area} м²</span><span>${ic('eye')}${esc(a.view)}</span></div>
     <div style="font-size:11.5px;color:#555;margin-top:8px">${a.from?dshort(a.from)+' '+parse(a.from).getFullYear():''} – ${a.to?dshort(a.to)+' '+parse(a.to).getFullYear():'сейчас'} · ${months(a)} мес. · всего ${vnd(months(a)*a.price)}</div>
     ${a.deposit?`<div style="font-size:11.5px;color:#555">Депозит: ${vnd(a.deposit)}</div>`:''}
@@ -462,9 +458,9 @@ function foodPage(){
 /* ---------- goals ---------- */
 function goalsPage(){
   return `<div class="ptitle"><h2>Цели</h2><div class="sp"><button class="btn" data-act="addGoal">${ic('plus')} Новая цель</button></div></div>
-  <div class="gridc">${S.goals.map(g=>`<div class="card"><div class="chd"><div class="ib" style="background:${g.color}22;color:${g.color}">${ic(g.icon)}</div><div><h3>${esc(g.title)}</h3><div class="sub">${g.featured?'Главная цель':''}</div></div></div>
-  <div class="num" style="font-size:20px;font-weight:700">${fmt(g.saved)} $ <span class="muted" style="font-size:13px;font-weight:400">из ${fmt(g.target)} $</span></div>
-  <div class="bar" style="height:8px;margin:10px 0"><i style="width:${pct(g.saved,g.target)}%;background:${g.color}"></i></div>
+  <div class="gridc">${S.goals.map(g=>`<div class="card"><div class="chd"><div class="ib" >${ic(g.icon)}</div><div><h3>${esc(g.title)}</h3><div class="sub">${g.featured?'Главная цель':''}</div></div></div>
+  <div class="num" style="font-size:20px;font-weight:600">${fmt(g.saved)} $ <span class="muted" style="font-size:13px;font-weight:400">из ${fmt(g.target)} $</span></div>
+  <div class="bar" style="height:8px;margin:10px 0"><i style="width:${pct(g.saved,g.target)}%;background:var(--green2)"></i></div>
   <div style="display:flex;justify-content:space-between;font-size:11.5px" class="muted"><span>${pct(g.saved,g.target)}%</span><span>осталось ${fmt(Math.max(0,g.target-g.saved))} $ ≈ ${vnd(Math.max(0,g.target-g.saved)*S.settings.rate)}</span></div>
   <div style="display:flex;gap:8px;margin-top:12px"><button class="btn" data-act="contrib" data-id="${g.id}">${ic('plus')} Пополнить</button><div class="acts" style="margin-left:auto"><button data-act="editGoal" data-id="${g.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delGoal" data-id="${g.id}" aria-label="Удалить">${ic('trash')}</button></div></div></div>`).join('')||'<div class="card empty">Целей пока нет</div>'}</div>`;
 }
@@ -477,8 +473,8 @@ function calendarPage(){
   const up=S.events.filter(e=>daysTo(e.date)>=0).sort((a,b)=>(a.date+a.from)<(b.date+b.from)?-1:1);
   return `<div class="ptitle"><h2>Календарь</h2><button class="btn ghost" data-act="calPrev" aria-label="Предыдущий месяц">${ic('chevl')}</button><b>${mlabel(k)}</b><button class="btn ghost" data-act="calNext" aria-label="Следующий месяц">${ic('chev')}</button><div class="sp"><button class="btn" data-act="addEvent">${ic('plus')} Добавить</button></div></div>
   <div class="card" style="overflow-x:auto"><div class="calgrid">${['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].map(d=>`<div class="h">${d}</div>`).join('')}
-  ${cells.map(d=>{const di=iso(d);const ev=S.events.filter(e=>e.date===di);const tr=S.trips.filter(t=>t.from<=di&&di<=(t.to||t.from));return `<div class="c ${d.getMonth()!==m-1?'out':''} ${di===tIso?'today':''}" data-act="addEvent" data-date="${di}"><b>${d.getDate()}</b>${tr.map(t=>`<span class="ctrip">✈ ${esc(t.city)}</span>`).join('')}${ev.map(e=>`<span data-act="editEvent" data-id="${e.id}">${e.from?esc(e.from)+' ':''}${esc(e.title)}</span>`).join('')}</div>`}).join('')}</div></div>
-  <div class="card"><div class="chd"><h3>Ближайшие события</h3></div>${up.map(e=>{const d=parse(e.date);const [i,l]=EVT[e.type]||EVT.other;return `<div class="ev" style="grid-template-columns:44px 26px 1fr 20px 70px"><div class="d"><b>${d.getDate()}</b><small>${WD[d.getDay()]} ${MSHORT[d.getMonth()]}</small></div><span style="color:${EVTCOL[e.type]}">${ic(i)}</span><div class="t">${esc(e.title)}<small>${l} · ${e.from?esc(e.from)+(e.to?' – '+esc(e.to):''):'На весь день'}</small></div><button class="chk ${e.done?'on':''}" data-act="toggleEvent" data-id="${e.id}" aria-label="Отметить">${e.done?ic('check'):''}</button><div class="acts"><button data-act="editEvent" data-id="${e.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delEvent" data-id="${e.id}" aria-label="Удалить">${ic('trash')}</button></div></div>`}).join('')||'<div class="empty">Нет запланированных дел</div>'}</div>`;
+  ${cells.map(d=>{const di=iso(d);const ev=S.events.filter(e=>e.date===di);const tr=S.trips.filter(t=>t.from<=di&&di<=(t.to||t.from));return `<div class="c ${d.getMonth()!==m-1?'out':''} ${di===tIso?'today':''}" data-act="addEvent" data-date="${di}"><b>${d.getDate()}</b>${tr.map(t=>`<span class="ctrip">${esc(t.city)}</span>`).join('')}${ev.map(e=>`<span data-act="editEvent" data-id="${e.id}">${e.from?esc(e.from)+' ':''}${esc(e.title)}</span>`).join('')}</div>`}).join('')}</div></div>
+  <div class="card"><div class="chd"><h3>Ближайшие события</h3></div>${up.map(e=>{const d=parse(e.date);const [i,l]=EVT[e.type]||EVT.other;return `<div class="ev" style="grid-template-columns:44px 26px 1fr 20px 70px"><div class="d"><b>${d.getDate()}</b><small>${WD[d.getDay()]} ${MSHORT[d.getMonth()]}</small></div><span style="color:var(--muted)">${ic(i)}</span><div class="t">${esc(e.title)}<small>${l} · ${e.from?esc(e.from)+(e.to?' – '+esc(e.to):''):'На весь день'}</small></div><button class="chk ${e.done?'on':''}" data-act="toggleEvent" data-id="${e.id}" aria-label="Отметить">${e.done?ic('check'):''}</button><div class="acts"><button data-act="editEvent" data-id="${e.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delEvent" data-id="${e.id}" aria-label="Удалить">${ic('trash')}</button></div></div>`}).join('')||'<div class="empty">Нет запланированных дел</div>'}</div>`;
 }
 
 /* ---------- trips ---------- */
@@ -529,7 +525,7 @@ function fitnessPage(){
   <div class="kpis"><div class="card kpi"><small>Текущий вес</small><b class="num">${last?kg(last.kg):'—'}</b><span class="${ago>2?'up':'muted'}">${last?(ago===0?'сегодня':ago===1?'вчера':ago+' '+plural(ago,'день','дня','дней')+' назад'):'взвешиваний пока нет'}</span></div>
     <div class="card kpi"><small>За неделю</small><b class="num">${c7==null?'—':kgDiff(c7)}</b><span class="muted">${c7==null?'мало данных':c7<0?'вес снижается':c7>0?'вес растёт':'без изменений'}</span></div>
     <div class="card kpi"><small>За месяц</small><b class="num">${c30==null?'—':kgDiff(c30)}</b><span class="muted">${c30==null?'мало данных':'с '+dshort(day(30))}</span></div>
-    <div class="card kpi"><small>Цель</small><b class="num">${goal?kg(goal):'—'}</b><span class="muted">${goal&&last?(Math.abs(last.kg-goal)<0.05?'цель достигнута 🎉':'осталось '+kg(Math.abs(last.kg-goal))):'нажмите «Цель», чтобы задать'}</span></div></div>
+    <div class="card kpi"><small>Цель</small><b class="num">${goal?kg(goal):'—'}</b><span class="muted">${goal&&last?(Math.abs(last.kg-goal)<0.05?'цель достигнута':'осталось '+kg(Math.abs(last.kg-goal))):'нажмите «Цель», чтобы задать'}</span></div></div>
   <div class="card"><div class="chd"><div class="ib g">${ic('chart')}</div><h3>Динамика веса</h3></div>${weightChart(l.slice(-60))}</div>
   <div class="card"><div class="chd"><h3>Взвешивания</h3></div>${rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Дата</th><th class="r">Вес</th><th class="r">Изменение</th><th>Заметка</th><th></th></tr></thead><tbody>
   ${rows.map(w=>{const i=l.indexOf(w),d=i>0?Number(w.kg)-Number(l[i-1].kg):null;return `<tr><td class="num">${dshort(w.date)} ${parse(w.date).getFullYear()}</td><td class="r num"><b>${kg(w.kg)}</b></td><td class="r num ${d==null||!d?'muted':good(d)?'down':'up'}">${d==null?'—':kgDiff(d)}</td><td class="muted">${esc(w.note)}</td><td><div class="acts"><button data-act="editWeight" data-id="${w.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delWeight" data-id="${w.id}" aria-label="Удалить">${ic('trash')}</button></div></td></tr>`}).join('')}
@@ -632,7 +628,7 @@ const F={
  expense:[{k:'date',l:'Дата',t:'date',req:1},{k:'amount',l:'Сумма, ₫',t:'number',req:1},{k:'cat',l:'Категория',t:'select',o:CATS.map(c=>c[0]),full:1},{k:'note',l:'Описание',full:1}],
  apt:[{k:'city',l:'Город',req:1},{k:'name',l:'Название / район',req:1},{k:'price',l:'Аренда в месяц, ₫',t:'number'},{k:'deposit',l:'Депозит, ₫',t:'number'},{k:'rooms',l:'Комнат',t:'number'},{k:'area',l:'Площадь, м²',t:'number'},{k:'view',l:'Вид',full:1},{k:'from',l:'Заехали',t:'date'},{k:'to',l:'Выехали',t:'date'},{k:'img',l:'Фото',t:'select',o:[['home1','Наша квартира'],['apt_main','Фото 1'],['apt1','Фото 2'],['apt2','Фото 3'],['apt3','Фото 4'],['apt4','Фото 5']]},{k:'current',l:'Живём сейчас',t:'check'},{k:'note',l:'Заметка',full:1}],
  util:[{k:'month',l:'Месяц',t:'month',req:1},{k:'kwh',l:'Электричество, кВт·ч',t:'number'},...UTIL.map(([k,l])=>({k,l:l+', ₫',t:'number'}))],
- goal:[{k:'title',l:'Цель',req:1,full:1},{k:'saved',l:'Накоплено, $',t:'number'},{k:'target',l:'Нужно, $',t:'number'},{k:'color',l:'Цвет',t:'select',o:[['#2f9e5b','Зелёный'],['#e8484a','Красный'],['#f5a63c','Оранжевый'],['#4c7fe0','Синий'],['#6b62d9','Фиолетовый']]},{k:'icon',l:'Иконка',t:'select',o:GOAL_ICONS},{k:'featured',l:'Показывать на главной',t:'check',full:1}],
+ goal:[{k:'title',l:'Цель',req:1,full:1},{k:'saved',l:'Накоплено, $',t:'number'},{k:'target',l:'Нужно, $',t:'number'},{k:'icon',l:'Иконка',t:'select',o:GOAL_ICONS},{k:'featured',l:'Показывать на главной',t:'check',full:1}],
  event:[{k:'title',l:'Название',req:1,full:1},{k:'date',l:'Дата',t:'date',req:1},{k:'type',l:'Тип',t:'select',o:Object.entries(EVT).map(([k,v])=>[k,v[1]])},{k:'from',l:'Начало (пусто — весь день)',t:'time'},{k:'to',l:'Конец',t:'time'}],
  trip:[{k:'city',l:'Куда',req:1,full:1},{k:'from',l:'С',t:'date',req:1},{k:'to',l:'По',t:'date',req:1},{k:'budget',l:'Бюджет, ₫',t:'number'},{k:'img',l:'Фото',t:'select',o:[['trip1','Горы и море'],['trip2','Закат'],['trip3','Скалы'],['danang_card','Пляж']]},{k:'note',l:'Заметки',full:1}],
  health:[{k:'date',l:'Дата',t:'date',req:1},{k:'kind',l:'Тип',t:'select',o:['Врач','Анализы','Прививка','Страховка','Спорт','Другое']},{k:'title',l:'Запись',req:1,full:1},{k:'cost',l:'Стоимость, ₫',t:'number'},{k:'note',l:'Заметка'}],
