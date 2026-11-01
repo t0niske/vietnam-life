@@ -238,7 +238,7 @@ function balances(c: Ctx): { acc: Item; bal: number }[] {
 
 /* ---------- text -> actions: Groq free tier, or Claude if an Anthropic key is set instead ---------- */
 const KINDS = ["expense", "income", "exchange", "balance", "rate", "event", "note", "health", "utility", "apartment", "trip", "trip_item", "meal",
-  "goal", "goal_add", "weight", "done", "reschedule", "delete", "useful", "setting", "report"];
+  "goal", "goal_add", "weight", "done", "reschedule", "delete", "useful", "setting", "report", "ask"];
 const SECTIONS = ["expenses", "incomes", "transfers", "events", "notes", "goals", "trips", "health", "apartments", "weights"];
 const REPORTS = ["expenses", "money", "events", "goals", "notes", "weight", "week", "month"];
 const str = { type: "string" }, numb = { type: "number" };
@@ -321,7 +321,8 @@ const prompt = (c: Ctx) => `Ты помощник пары, которая жи�
 Деньги: amount — число, как сказано («150 тысяч», «150к» = 150000, «полтора миллиона», «1,5 ляма» = 1500000), currency — его валюта: VND (донги, если валюта не названа), RUB (рубли), KZT (тенге), USD (доллары), EUR (евро), THB (баты). В донги не пересчитывай, это сделает бот.
 
 Виды действий (kind) и их поля:
-- expense — потратили деньги. date, amount, currency, category (одна из: ${CATS.join(", ")}), title — что купили, коротко; account — счёт из списка, если назван («с тинькоффа», «с каспи»).
+- expense — потратили деньги. date, amount, currency, category (одна из: ${CATS.join(", ")}), title — что купили, коротко; account — счёт из списка, если назван или назван банк/карта.
+  account всегда копируй точно из списка «Счета». Банк узнавай по валюте: Kaspi/Каспи/Халык — счёт в KZT, Тинькофф/Т-Банк/Сбер/Альфа — счёт в RUB, наличные во Вьетнаме — счёт в VND. currency — валюта цены, а не карты: «кофе 100 тысяч с каспи» — это 100000 VND с счёта в KZT.
 - income — получили деньги: зарплата, перевод от кого-то, кэшбэк, продажа. date, amount, currency, title — источник, коротко с заглавной буквы («Зарплата»); account — счёт, если назван.
 - exchange — обмен валюты или перевод между своими счетами («поменял 50 тысяч рублей на тенге, получил 270 тысяч, комиссия 500 рублей»). amount + currency — сколько отдали, amount_to + currency_to — сколько получили, fee + fee_currency — комиссия, если названа; account / account_to — счета, если названы; title — заметка.
 - balance — сколько сейчас денег на счёте («на каспи осталось 120 тысяч тенге»). account — название счёта (из списка или новое), amount, currency.
@@ -346,6 +347,7 @@ const prompt = (c: Ctx) => `Ты помощник пары, которая жи�
 - setting — изменить настройку сайта. key (${Object.entries(SETTINGS).map(([k, v]) => k + " — " + v).join(", ")}), value.
 - weight — взвесился («вес 78,4», «утром 79 и 2»). amount — вес в килограммах, date, text — заметка. Для удаления взвешивания в delete title — его дата YYYY-MM-DD.
 - report — вопрос о данных, а не новая запись («сколько потратили в этом месяце», «сколько денег на счетах», «что у нас на неделе», «сколько накопили», «что надо сделать», «как мой вес», «отчёт за неделю», «итоги прошлого месяца»). section: expenses (month — какой месяц), money (доходы, расходы и остатки на счетах; month), events, goals, notes, weight, week (отчёт за последние 7 дней) или month (полный отчёт за месяц; month).
+- ask — любой другой вопрос, на который нужен обдуманный ответ, а не готовая сводка: сравнения, причины, советы, прогнозы, расчёты («на что мы больше всего тратим и где сэкономить», «хватит ли денег до конца месяца», «сколько в среднем уходит на еду в неделю», «когда накопим на айфон», «как изменились траты за три месяца»), а также вопросы о жизни во Вьетнаме. text — вопрос целиком своими словами. Если вопрос подходит под report — используй report, иначе ask.
 Бот сам присылает напоминания о делах за час, утреннюю сводку, вечером напоминание записать расходы и отчёт за день, в воскресенье — за неделю, 1-го числа — за прошлый месяц. Время меняется через setting (notifyMorning, notifyRemind, notifyReport, notifyMonthly; value — HH:MM или off, чтобы выключить).
 
 Данные на сайте сейчас:
@@ -423,12 +425,16 @@ type Done = { line: string; ops: Op[] };
 const miss = (what: string, name: string): Done => ({ line: `❓ Не нашёл ${what} ${q(esc(name))}, ничего не изменил`, ops: [] });
 const noRate = (c: string): Done => ({ line: `❓ Не знаю курс ${c}: задайте его, например «курс ${c} 280 донгов»`, ops: [] });
 
+// banks named by voice, by the currency of their cards
+const BANKS: [RegExp, string][] = [[/kaspi|каспи|halyk|халык|freedom|фридом/i, "KZT"], [/tinkoff|тинько|т-банк|сбер|альфа|втб|озон/i, "RUB"], [/налич|кэш|cash/i, "VND"]];
 // the account money comes from or goes to: the named one, else the first one in that currency, else a new one
 async function account(name: string, currency: string): Promise<{ acc: Item; ops: Op[] }> {
   const list = await items("accounts");
-  const acc = (name && pick(list, name, (a) => a.name)) || (!name && list.find((a) => a.cur === currency));
+  // a bank that has no account of its own name is the account in its card's currency
+  const bankCur = name ? BANKS.find(([re]) => re.test(name))?.[1] : undefined;
+  const acc = (name && pick(list, name, (a) => a.name)) || (bankCur && list.find((a) => a.cur === bankCur)) || (!name && list.find((a) => a.cur === currency));
   if (acc) return { acc, ops: [] };
-  const created = { id: uid(), name: name ? cap(name) : CUR[currency][1], cur: currency, start: 0 };
+  const created = { id: uid(), name: name ? cap(name) : CUR[currency][1], cur: bankCur ?? currency, start: 0 };
   return { acc: created, ops: [await add("accounts", created)] };
 }
 
@@ -444,14 +450,22 @@ async function apply(r: Rec, c: Ctx): Promise<Done> {
       const item: Item = { id: uid(), date, cat: CATS.includes(r.category) ? r.category : "Другое", amount: vnd, note: r.title };
       const ops: Op[] = [];
       // a foreign currency is always paid from an account in it; dong only when the account is named or one exists
+      let charged = "";
       if (r.currency !== "VND" || r.account || c.accounts.some((a) => a.cur === "VND")) {
         const a = await account(r.account, r.currency);
         ops.push(...a.ops);
         item.acc = a.acc.id;
-        if (r.currency !== "VND") Object.assign(item, { orig: r.amount, cur: r.currency });
+        // the account is charged in its own currency: dong paid with a tenge card comes off in tenge at the set rate
+        if (a.acc.cur !== "VND") {
+          const k = a.acc.cur === r.currency ? 0 : await vndRate(a.acc.cur, c);
+          if (a.acc.cur !== r.currency && !k) return noRate(a.acc.cur);
+          const orig = k ? Math.round(vnd / k * 100) / 100 : r.amount;
+          Object.assign(item, { orig, cur: a.acc.cur });
+          if (a.acc.cur !== r.currency) charged = ` · списано ${cash(orig, a.acc.cur)} с ${esc(a.acc.name)}`;
+        }
       }
       ops.push(await add("expenses", item));
-      return { line: `💸 Расход ${money(vnd)}${inVnd} · ${esc(item.cat)}${r.title ? " · " + esc(r.title) : ""} · ${dshort(date)}`, ops };
+      return { line: `💸 Расход ${money(vnd)}${inVnd} · ${esc(item.cat)}${r.title ? " · " + esc(r.title) : ""}${charged} · ${dshort(date)}`, ops };
     }
     case "income": {
       if (!r.amount) return { line: "❓ Не расслышал сумму дохода", ops: [] };
@@ -746,6 +760,81 @@ async function monthReport(c: Ctx, m: string): Promise<string> {
   return out + await balancesText(c);
 }
 
+/* ---------- free questions: the AI reasons over a digest of all the data ---------- */
+// everything worth knowing, compact: months as totals, this month and recent records in full
+async function digest(c: Ctx): Promise<string> {
+  const day = today(), m = day.slice(0, 7), months = [m];
+  while (months.length < 6) months.unshift(prevMonth(months[0]));
+  const byMonth = months.map((mm) => {
+    const s = spentIn(c, mm + "-01", mm + "-31"), inc = sumOf(c.incomes.filter((i) => String(i.date).startsWith(mm)), "vnd");
+    return `${mm}: расходы ${Math.round(s.total)} ₫ (${s.cats.map(([k, v]) => `${k} ${Math.round(v)}`).join(", ") || "нет"}); доходы ${Math.round(inc)} ₫`;
+  });
+  const cur = c.expenses.filter((e) => String(e.date).startsWith(m)).sort((a, b) => (a.date < b.date ? -1 : 1));
+  const bals: string[] = [];
+  for (const { acc, bal } of balances(c)) bals.push(`${acc.name}: ${Math.round(bal * 100) / 100} ${acc.cur} (≈ ${Math.round(bal * (await vndRate(acc.cur, c)))} ₫)`);
+  const apt = c.apartments.find((a) => a.current);
+  const ev = c.events.filter((e) => e.date >= addDays(day, -7) && e.date <= addDays(day, 30)).sort((a, b) => (a.date + a.from < b.date + b.from ? -1 : 1));
+  return `Сегодня ${day} (${DAYS_FULL[todayIdx()]}). Бюджет на месяц ${c.budget} ₫. Курсы: 1 $ = ${c.usd} ₫${Object.entries(c.rates).filter(([k]) => k !== "USD").map(([k, v]) => `, 1 ${k} = ${v} ₫`).join("")}.
+Расходы и доходы по месяцам (₫):
+${byMonth.join("\n")}
+Все расходы этого месяца (дата, сумма ₫, категория, описание):
+${lines(cur.map((e) => `${e.date} ${e.amount} ${e.cat} ${e.note || ""}`))}
+Доходы за последние месяцы:
+${lines(c.incomes.filter((i) => i.date >= months[0]).map((i) => `${i.date} ${i.amount} ${i.cur} (${i.vnd} ₫) ${i.source}`))}
+Обмены валют:
+${lines(c.transfers.slice(-10).map((t) => `${t.date} отдали ${t.out} → получили ${t.in}${t.fee ? ", комиссия " + t.fee + " " + t.feeCur : ""}`))}
+Остатки на счетах:
+${lines(bals)}
+Цели (в $): ${c.goals.map((g) => `${g.title}: ${g.saved || 0} из ${g.target || 0}`).join("; ") || "нет"}
+Квартира: ${apt ? `${apt.city}, ${apt.name}, аренда ${apt.price} ₫/мес, с ${apt.from}${apt.note ? ", " + apt.note : ""}` : "не указана"}
+Коммуналка по месяцам: ${c.utilities.slice(-6).map((u) => `${u.month}: ${Object.keys(UTIL).reduce((a, k) => a + (Number(u[k]) || 0), 0)} ₫${u.kwh ? ", " + u.kwh + " кВт·ч" : ""}`).join("; ") || "нет"}
+События (неделя назад — месяц вперёд):
+${lines(ev.map((e) => `${e.date}${e.from ? " " + e.from : ""} ${e.title}${e.done ? " (сделано)" : ""}`))}
+Открытые задачи: ${c.notes.filter((n) => !n.done).map((n) => n.text).join("; ") || "нет"}
+Поездки: ${c.trips.map((t) => `${t.city} ${t.from}…${t.to}, бюджет ${t.budget} ₫`).join("; ") || "нет"}
+Вес: ${c.weights.slice(-20).map((w) => `${w.date} ${w.kg}`).join(", ") || "нет записей"}${c.settings.weightGoal ? `; цель ${c.settings.weightGoal} кг` : ""}`;
+}
+
+const ASK_SYSTEM = `Ты личный помощник пары, которая живёт во Вьетнаме (Нячанг). У тебя есть все данные из их планера: деньги, счета, планы, вес.
+Отвечай по-русски, по делу и дружелюбно, как толковый друг-финансист: сначала прямой ответ, потом 2–5 коротких пунктов с цифрами и, если уместно, один конкретный совет.
+Считай аккуратно, опирайся только на данные ниже; если данных не хватает — скажи, чего именно, и что записать, чтобы ответ стал точнее. Не выдумывай записи.
+На общие вопросы о жизни во Вьетнаме (визы, банки, транспорт, медицина) отвечай из своих знаний и предупреждай, если правила могли измениться.
+Суммы пиши с пробелами между разрядами и знаком валюты (12 500 000 ₫). Не используй таблицы и заголовки; для выделения — только **жирный**. Не длиннее 15 строк.`;
+
+async function ask(question: string, c: Ctx): Promise<string> {
+  const data = await digest(c);
+  // the answer goes out as Telegram HTML: everything escaped, only **bold** kept
+  const fmt = (s: string) => {
+    const t = esc(s.trim()).replace(/^#+\s*/gm, "").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").slice(0, 3800);
+    return t ? "💬 " + t : "Не получилось ответить, спросите, пожалуйста, иначе.";
+  };
+  const groq = await secret("groq_api_key");
+  if (groq) {
+    const model = await groqModel(PREFER_LLM, "llm");
+    const r = await fetch(`${GROQ}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${groq}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model, temperature: 0.3, max_tokens: 1500,
+        // the reasoning models think before answering, which helps with the arithmetic
+        ...(model.startsWith("openai/gpt-oss") ? { reasoning_effort: "medium" } : {}),
+        messages: [{ role: "system", content: ASK_SYSTEM + "\n\nДанные:\n" + data }, { role: "user", content: question }],
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error("Groq: " + (j.error?.message ?? r.status));
+    return fmt(String(j.choices?.[0]?.message?.content ?? ""));
+  }
+  const key = await secret("anthropic_api_key");
+  if (!key) throw new Error("NO_AI_KEY");
+  const res = await new Anthropic({ apiKey: key }).messages.create({
+    model: "claude-opus-5-5", max_tokens: 2000, system: ASK_SYSTEM + "\n\nДанные:\n" + data,
+    messages: [{ role: "user", content: question }],
+  } as any);
+  const block = res.content.find((b) => b.type === "text");
+  return fmt(block && block.type === "text" ? block.text : "");
+}
+
 /* ---------- scheduled messages: pg_cron calls the function every 15 minutes ---------- */
 // local date, minutes since midnight and weekday (0 = Monday) in Vietnam
 function local(now: Date) {
@@ -828,7 +917,8 @@ const EXAMPLES = `• «Потратил 150 тысяч на кофе»
 • «Отложили 5 миллионов на айфон»
 • «Вес 78,4»
 • «Переходник купил» — отмечу заметку
-• «Сколько денег на счетах?»`;
+• «Сколько денег на счетах?»
+• «На что мы тратим больше всего и где можно сэкономить?»`;
 
 // deno-lint-ignore no-explicit-any
 async function handle(u: any) {
@@ -897,6 +987,7 @@ async function handle(u: any) {
     const done: string[] = [], answers: string[] = [], undo: string[] = [];
     for (const r of records) {
       if (r.kind === "report") { answers.push(await report(r, c)); continue; }
+      if (r.kind === "ask") { await tg("sendChatAction", { chat_id: chat, action: "typing" }); answers.push(await ask(r.text || input, c)); continue; }
       const d = await apply(r, c);
       if (!d.line) continue;
       done.push(d.line);

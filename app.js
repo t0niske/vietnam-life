@@ -320,7 +320,7 @@ function expensesPage(){
     <div class="card kpi"><small>Средний расход в день</small><b class="num">${vnd(tot/(k===mkey(new Date())?new Date().getDate():new Date(+k.slice(0,4),+k.slice(5),0).getDate()))}</b></div>
     <div class="card kpi"><small>Бюджет на месяц</small><b class="num">${vnd(S.settings.budget)}</b><span class="muted">использовано ${pct(sum(monthExp(k)),S.settings.budget)}%</span></div></div>
   <div class="card">${list.length?`<div class="tbl-wrap"><table><thead><tr><th>Дата</th><th>Категория</th><th>Описание</th><th class="r">Сумма</th><th class="r">В $</th><th></th></tr></thead><tbody>
-  ${list.map(e=>`<tr><td class="num">${dshort(e.date)}</td><td><span class="dot" style="background:${catColor(e.cat)}"></span>${esc(e.cat)}</td><td>${esc(e.note)}</td><td class="r num"><b>${vnd(e.amount)}</b></td><td class="r num muted">${fmt(e.amount/S.settings.rate)} $</td><td><div class="acts"><button data-act="editExpense" data-id="${e.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delExpense" data-id="${e.id}" aria-label="Удалить">${ic('trash')}</button></div></td></tr>`).join('')}
+  ${list.map(e=>`<tr><td class="num">${dshort(e.date)}</td><td><span class="dot" style="background:${catColor(e.cat)}"></span>${esc(e.cat)}</td><td>${esc(e.note)}${e.cur&&e.cur!=='VND'&&e.orig?`<br><small class="muted">списано ${cash(e.orig,e.cur)}${accById(e.acc)?' · '+esc(accById(e.acc).name):''}</small>`:''}</td><td class="r num"><b>${vnd(e.amount)}</b></td><td class="r num muted">${fmt(e.amount/S.settings.rate)} $</td><td><div class="acts"><button data-act="editExpense" data-id="${e.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delExpense" data-id="${e.id}" aria-label="Удалить">${ic('trash')}</button></div></td></tr>`).join('')}
   </tbody></table></div>`:'<div class="empty">За этот месяц расходов нет. Нажмите «Добавить расход», чтобы записать первый.</div>'}</div>`;
 }
 
@@ -628,7 +628,10 @@ const F={
 const accOpts=(c,none)=>(none?[['',none]]:[]).concat(S.accounts.filter(a=>!c||a.cur===c).map(a=>[a.id,a.name+' · '+(CUR[a.cur]||CUR.VND)[0]]));
 const incomeF=()=>[{k:'date',l:'Дата',t:'date',req:1},{k:'amount',l:'Сумма',t:'number',req:1},{k:'cur',l:'Валюта',t:'select',o:Object.keys(CUR).map(c=>[c,CUR[c][1]+' '+CUR[c][0]])},{k:'acc',l:'Счёт',t:'select',o:accOpts('','Счёт в этой валюте')},{k:'source',l:'Источник',full:1}];
 const transferF=()=>[{k:'date',l:'Дата',t:'date',req:1},{k:'note',l:'Заметка'},{k:'from',l:'Откуда',t:'select',o:accOpts()},{k:'out',l:'Отдали',t:'number',req:1},{k:'to',l:'Куда',t:'select',o:accOpts()},{k:'in',l:'Получили',t:'number',req:1},{k:'fee',l:'Комиссия (в валюте «откуда»)',t:'number',full:1}];
-const expenseF=()=>S.accounts.some(a=>a.cur==='VND')?F.expense.concat([{k:'acc',l:'Счёт',t:'select',o:accOpts('VND','Не указан'),full:1}]):F.expense;
+const expenseF=()=>S.accounts.length?F.expense.concat([{k:'acc',l:'Счёт',t:'select',o:accOpts('','Не указан'),full:1}]):F.expense;
+// an account in another currency is charged in it: dong paid with a tenge card comes off in tenge at the set rate
+const expenseAcc=o=>{const a=accById(o.acc);if(!a||a.cur==='VND')return {...o,orig:undefined,cur:undefined};
+  const r=rateOf(a.cur);return {...o,cur:a.cur,orig:r?Math.round((Number(o.amount)||0)/r*100)/100:0}};
 // a dong amount for an income: the rate from the settings, otherwise today's rate
 const incomeVnd=o=>{const r=rateOf(o.cur);return {...o,acc:o.acc||accFor(o.cur).id,rate:r,vnd:Math.round((Number(o.amount)||0)*r)}};
 const transferFee=o=>({...o,feeCur:o.fee?(accById(o.from)||{}).cur||'':'',feeAcc:o.fee?o.from:''});
@@ -639,8 +642,8 @@ function act(a,el){
   switch(a){
   case 'day':U.day=+el.dataset.i;render();break;
   case 'meal':{const d=+el.dataset.d,j=+el.dataset.j;const m=S.meals.days[d].items[j];form(MEALT[j]+', '+S.meals.days[d].day,[{k:'name',l:'Блюдо',req:1,full:1},{k:'desc',l:'Дополнение',full:1},{k:'kcal',l:'Калории',t:'number'}],m,o=>{S.meals.days[d].items[j]=o;save('meals')});break}
-  case 'addExpense':form('Новый расход',expenseF(),{date:iso(new Date()),cat:U.expCat||'Питание'},o=>{upsert('expenses',{id:uid(),...o});toast('Расход добавлен')});break;
-  case 'editExpense':{const e=find('expenses',id);form('Расход',expenseF(),e,o=>upsert('expenses',{...e,...o}),()=>remove('expenses',id));break}
+  case 'addExpense':form('Новый расход',expenseF(),{date:iso(new Date()),cat:U.expCat||'Питание'},o=>{upsert('expenses',{id:uid(),...expenseAcc(o)});toast('Расход добавлен')});break;
+  case 'editExpense':{const e=find('expenses',id);form('Расход',expenseF(),e,o=>upsert('expenses',{...e,...expenseAcc(o)}),()=>remove('expenses',id));break}
   case 'addIncome':form('Новый доход',incomeF(),{date:iso(new Date()),cur:'RUB',source:'Зарплата'},o=>{if(o.cur!=='VND'&&!rateOf(o.cur)){toast('Курс '+o.cur+' неизвестен: задайте его в блоке «Курсы валют»');return}upsert('incomes',{id:uid(),...incomeVnd(o)});toast('Доход добавлен')});break;
   // an edited income keeps the rate it was saved with, unless its currency changed
   case 'editIncome':{const e=find('incomes',id);form('Доход',incomeF(),e,o=>{const v=incomeVnd(o);if(o.cur===e.cur&&e.rate){v.rate=e.rate;v.vnd=Math.round((Number(o.amount)||0)*e.rate)}upsert('incomes',{...e,...v})},()=>remove('incomes',id));break}
