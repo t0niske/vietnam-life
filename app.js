@@ -131,6 +131,7 @@ async function init(){
   else if(window.supabase&&window.VL_SUPABASE){
     try{
       sb=window.supabase.createClient(VL_SUPABASE.url,VL_SUPABASE.key);
+      dropOldDemo();
       const {data}=await sb.auth.getSession();user=data.session?data.session.user:null;
       sb.auth.onAuthStateChange((ev,ses)=>{const u=ses?ses.user:null;if((u&&u.id)!==(user&&user.id))location.reload()});
       if(user){d=cloudDb();dbKind='cloud'}
@@ -144,7 +145,12 @@ async function init(){
     },err=>{toast('База недоступна, сохраняю в этом браузере');fallback()});
   } else fallback();
 }
-function fallback(){mode='local';const l=lsGet();if(l){Object.keys(S).forEach(k=>{if(l[k]!=null)S[k]=l[k]})}else{const d=makeDemo(new Date());Object.keys(d).forEach(k=>S[k]=d[k]);lsSet()}loaded=true;render()}
+// without sign-in only what this browser saved is shown; the example data comes only from the button in the settings
+function fallback(){mode='local';const l=lsGet();if(l)Object.keys(S).forEach(k=>{if(l[k]!=null)S[k]=l[k]});loaded=true;render()}
+// the site used to fill an empty browser with the example, which looked like real numbers and could be pushed to the cloud.
+// Once per browser that copy is set aside (kept under LS+'-old')
+function dropOldDemo(){try{if(localStorage.getItem(LS+'-nodemo'))return;const o=localStorage.getItem(LS);if(o)localStorage.setItem(LS+'-old',o);localStorage.removeItem(LS);localStorage.setItem(LS+'-nodemo','1')}catch(e){}}
+const signinBar=()=>sb&&!user&&loaded&&U.route!=='settings'?`<div class="card signin"><div class="ib g">${ic('home')}</div><div><b>Вы не вошли</b><p>Показаны только записи этого браузера. Общие данные и Telegram-бот появятся после входа по почте.</p></div><a class="btn" href="#settings">${ic('arrow')} Войти</a></div>`:'';
 
 /* ---------- derived ---------- */
 const monthExp=k=>S.expenses.filter(e=>String(e.date).startsWith(k));
@@ -560,7 +566,7 @@ function accountCard(){
   if(!user)return `<div class="card"><div class="chd"><div class="ib g">${ic('home')}</div><div><h3>Вход и синхронизация</h3><div class="sub">Общие данные на всех устройствах и Telegram-бот</div></div></div>
   <form id="loginf" class="fgrid"><label class="field full">Email участника<input name="email" id="login-email" type="email" required autocomplete="email" placeholder="you@example.com"></label>
   <div class="full"><button class="btn" type="submit">${ic('arrow')} Получить ссылку для входа</button></div></form>
-  <p class="muted" style="font-size:11.5px;margin:10px 0 0">На почту придёт ссылка: откройте её на этом устройстве. Войти могут только адреса из списка участников.</p></div>`;
+  <p class="muted" style="font-size:11.5px;margin:10px 0 0">На почту придёт ссылка. Откройте её в том же браузере, где открыт сайт: если почта на телефоне открывает ссылки у себя внутри, скопируйте ссылку и вставьте в Safari или Chrome. Войти могут только адреса из списка участников.</p></div>`;
   return `<div class="card"><div class="chd"><div class="ib g">${ic('check')}</div><div><h3>Вы вошли</h3><div class="sub">${esc(user.email)}</div></div><button class="btn ghost sp" data-act="logout">Выйти</button></div>
   <p style="font-size:12.5px;margin:0 0 10px">Telegram-бот <b>@${VL_SUPABASE.bot}</b> принимает голосовые и текст, сам заполняет все разделы сайта, напоминает о делах и присылает отчёты.</p>
   <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-act="tgLink">${ic('plane')} Подключить Telegram</button><button class="btn ghost" data-act="pushLocal">Перенести данные из этого браузера</button></div>
@@ -595,7 +601,7 @@ function render(){
   if(!rootEl)return;
   const ae=document.activeElement,aid=ae&&ae.id,pos=ae&&ae.selectionStart;
   rootEl.innerHTML=shell();
-  $('#page').innerHTML=(PAGES[U.route]||home)();
+  $('#page').innerHTML=signinBar()+(PAGES[U.route]||home)();
   if(U.route==='utilities')kwCalc();
   // entrance animation only once, after the data is loaded: every click re-renders the whole page
   if(loaded&&!introDone){introDone=true;rootEl.classList.add("intro");setTimeout(()=>rootEl.classList.remove("intro"),1400)}
