@@ -235,7 +235,8 @@ async function budgetOf(c: Ctx, st: Item) {
     const got = inc.filter((v) => v > 0);
     if (got.length >= 2) { gross = got.reduce((a, b) => a + b, 0) / got.length; src = `средний доход за ${got.length} мес.`; }
     else if (c.accounts.length) {
-      gross = sumOf(c.expenses.filter((e) => String(e.date).startsWith(now)), "amount");
+      // only spending taken from an account is added back: the rest never left the balances
+      gross = sumOf(c.expenses.filter((e) => e.acc && String(e.date).startsWith(now)), "amount");
       for (const { acc, bal } of balances(c)) gross += bal * (await vndRate(acc.cur, c));
       src = "деньги на счетах";
     }
@@ -896,11 +897,44 @@ async function ask(question: string, c: Ctx, history: Msg[] = []): Promise<strin
   return fmt(block && block.type === "text" ? block.text : "");
 }
 
+/* ---------- a tip after every recorded expense ---------- */
+const TIP_SYSTEM = `Ты финансовый помощник семьи, которая живёт во Вьетнаме (Нячанг). После каждой новой траты давай один короткий практичный совет: 1–2 предложения, не длиннее 220 символов.
+Опирайся на цифры ниже: темп трат, остаток бюджета на день, сравнение категории с прошлым месяцем. Если трата разумная и в бюджет укладывается, скажи это одной фразой и подскажи, как во Вьетнаме тратить на такое меньше (рынки вместо супермаркетов, Grab Bike вместо такси, местная еда, торг и т. п.). Если тратят быстрее, чем позволяет бюджет, предупреди и назови сумму на день.
+Не морализируй, не повторяй сумму самой траты, без приветствий, эмодзи и markdown. Суммы пиши с пробелами между разрядами и знаком ₫.`;
+// one short tip from the AI with this month's numbers; without the AI, or when it is busy, a plain line about what is left per day
+async function expenseTip(ids: string[], c: Ctx): Promise<string> {
+  const all = await items("expenses");
+  const added = all.filter((e) => ids.includes(e.id));
+  if (!added.length) return "";
+  const day = today(), m = day.slice(0, 7), pm = prevMonth(m);
+  const now = spentIn({ ...c, expenses: all }, m + "-01", day);
+  const before = spentIn({ ...c, expenses: all }, pm + "-01", pm + day.slice(7));
+  const daysLeft = Number(addDays(addDays(m + "-28", 4).slice(0, 7) + "-01", -1).slice(8)) - Number(day.slice(8)) + 1;
+  const left = c.budget - now.total;
+  const plain = left >= 0
+    ? `💡 До конца месяца на траты осталось ${money(left)}: примерно ${money(left / daysLeft)} в день`
+    : `💡 Бюджет месяца уже превышен на ${money(-left)}: необязательные траты лучше отложить до следующего месяца`;
+  const catOf = (x: { cats: [string, number][] }, k: string) => x.cats.find(([n]) => n === k)?.[1] ?? 0;
+  const facts = [
+    `Только что записали: ${added.map((e) => `${e.amount} ₫, ${e.cat}${e.note ? ", " + e.note : ""}`).join("; ")}`,
+    `Сегодня ${day}, до конца месяца ${daysLeft} дн. (включая сегодня)`,
+    `Бюджет на траты в этом месяце ${c.budget} ₫, уже потрачено ${now.total} ₫, осталось ${left} ₫ — это ${Math.round(left / daysLeft)} ₫ в день`,
+    ...[...new Set(added.map((e) => String(e.cat)))].map((k) => `${k}: в этом месяце ${catOf(now, k)} ₫, за те же дни прошлого месяца ${catOf(before, k)} ₫`),
+    c.savePct ? `На подушку безопасности откладывают ${c.savePct}% (уже вычтено из бюджета)` : "",
+  ].filter(Boolean).join("\n");
+  try {
+    const t = (await groqCall([{ role: "system", content: TIP_SYSTEM }, { role: "user", content: facts }], { maxTokens: 900, temperature: 0.6, noWait: true }))
+      .replace(/\*\*|^#+\s*/gm, "").trim();
+    if (t) return "💡 " + esc(t).slice(0, 400);
+  } catch (e) { console.error(e); }
+  return plain;
+}
+
 /* ---------- nutrition coach: interview, daily norm, weekly menu, shopping list, recipes ---------- */
 type Msg = { role: string; content: string };
 // one answer from Groq. Each model has its own free per-minute quota, so on a rate limit or an error the next one is tried;
 // when all of them are busy the bot waits the few seconds Groq asks for and goes round once more
-async function groqCall(messages: Msg[], opt: { json?: boolean; maxTokens?: number; temperature?: number } = {}): Promise<string> {
+async function groqCall(messages: Msg[], opt: { json?: boolean; maxTokens?: number; temperature?: number; noWait?: boolean } = {}): Promise<string> {
   const key = await secret("groq_api_key");
   if (!key) throw new Error("NO_AI_KEY");
   await groqModel(PREFER_LLM, "llm");
@@ -929,7 +963,8 @@ async function groqCall(messages: Msg[], opt: { json?: boolean; maxTokens?: numb
       const m = /try again in ([\d.]+)s/.exec(last);
       if (m) wait = Math.max(wait, Math.min(20, Number(m[1])));
     }
-    if (!wait) break;
+    // a tip is not worth holding the reply for: noWait gives up instead of waiting
+    if (!wait || opt.noWait) break;
     await new Promise((ok) => setTimeout(ok, wait * 1000 + 300));
   }
   throw new Error("Groq: " + last);
@@ -1306,7 +1341,7 @@ async function handle(u: any) {
     }
 
     // later: long extras (the shopping list) that go out as their own messages
-    const done: string[] = [], answers: string[] = [], undo: string[] = [], later: string[] = [];
+    const done: string[] = [], answers: string[] = [], undo: string[] = [], later: string[] = [], spent: string[] = [];
     for (const r of records) {
       if (r.kind === "report") { answers.push(await report(r, c)); continue; }
       if (r.kind === "ask") { await tg("sendChatAction", { chat_id: chat, action: "typing" }); answers.push(await ask(r.text || input, c, history)); continue; }
@@ -1328,11 +1363,14 @@ async function handle(u: any) {
       const d = await apply(r, c);
       if (!d.line) continue;
       done.push(d.line);
+      if (r.kind === "expense") for (const o of d.ops) if (o.op === "remove" && o.sec === "expenses") spent.push(o.id);
       if (d.ops.length) {
         const { data: row } = await db.from("vl_bot_undo").insert({ chat_id: chat, ops: d.ops }).select("id").single();
         if (row) undo.push(row.id);
       }
     }
+    // every recorded expense gets a short tip, after what was recorded
+    if (spent.length) { await tg("sendChatAction", { chat_id: chat, action: "typing" }); const t = await expenseTip(spent, c); if (t) answers.unshift(t); }
     // cancel buttons older than a month are not needed any more
     await db.from("vl_bot_undo").delete().lt("created_at", new Date(Date.now() - 30 * 864e5).toISOString());
     const buttons = undo.map((id, i) => [{ text: undo.length > 1 ? `↩️ Отменить ${i + 1}` : "↩️ Отменить", callback_data: `x:${id}` }]);

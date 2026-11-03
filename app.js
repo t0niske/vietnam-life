@@ -188,7 +188,8 @@ function budgetInfo(){
   if(S.settings.budgetAuto){
     const inc=[1,2,3].map(n=>shiftM(now,-n)).map(m=>S.incomes.filter(i=>i.kind!=='deposit'&&String(i.date).startsWith(m)).reduce((s,i)=>s+(Number(i.vnd)||0),0)).filter(v=>v>0);
     if(inc.length>=2){gross=inc.reduce((a,b)=>a+b,0)/inc.length;src='средний доход за '+inc.length+' мес.'}
-    else if(S.accounts.length){loadLive();gross=balances().reduce((s,b)=>s+b.bal*rateOf(b.acc.cur),0)+sum(monthExp(now));src='деньги на счетах'}
+    // only spending taken from an account is added back: the rest never left the balances
+    else if(S.accounts.length){loadLive();gross=balances().reduce((s,b)=>s+b.bal*rateOf(b.acc.cur),0)+sum(monthExp(now).filter(e=>e.acc));src='деньги на счетах'}
   }
   const p=Math.min(90,Math.max(0,Number(S.settings.savePct)||0)),save=Math.round(gross*p/100);
   return {sum:Math.round(gross)-save,gross:Math.round(gross),save,pct:p,src};
@@ -405,6 +406,41 @@ function depLine(a){
     ?`<button class="chip g" data-act="depUndo" data-id="${a.id}" title="Отменить возврат">вернули ${dshort(a.depBack)}${kept?' · удержали '+vnd(kept):''}</button>`
     :`<span class="muted">вернётся при выезде${a.to&&daysTo(a.to)>=0?', '+dshort(a.to):''}</span>`}</div>`;
 }
+// the rental contract: files in the private 'vl-docs' storage, only signed-in members can open or add them
+const DOCS='vl-docs';
+const fsize=n=>n>=1048576?(n/1048576).toFixed(1).replace('.',',')+' МБ':Math.max(1,Math.round(n/1024))+' КБ';
+function aptDocs(a){
+  const docs=a.docs||[];
+  if(!sb||!docs.length&&!user)return '';
+  return `<div class="docs"><div class="docs-h">Договор аренды</div>${docs.map((d,i)=>`<div class="doc"><button class="doc-open" data-act="docOpen" data-id="${a.id}" data-i="${i}">${ic('doc')}<span>${esc(d.name)}</span><small class="num">${fsize(d.size)}</small></button>${user?`<button class="doc-del" data-act="docDel" data-id="${a.id}" data-i="${i}" aria-label="Удалить файл">${ic('trash')}</button>`:''}</div>`).join('')}
+    ${user?`<button class="link" data-act="docAdd" data-id="${a.id}">${ic('plus')} ${docs.length?'Добавить файл':'Загрузить договор'}</button>`:'<div class="muted">Войдите, чтобы открыть договор</div>'}</div>`;
+}
+function docAdd(a){
+  const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='application/pdf,image/*';
+  inp.onchange=async()=>{
+    const files=[...inp.files];if(!files.length)return;
+    const big=files.find(f=>f.size>15728640);if(big){toast('Файл больше 15 МБ: '+big.name);return}
+    toast('Загружаю…');const added=[];
+    for(const f of files){
+      // the key is made of safe characters only, the original name is kept next to it
+      const ext=(f.name.match(/\.[a-z0-9]{1,5}$/i)||[''])[0].toLowerCase(),path='apartments/'+a.id+'/'+uid()+ext;
+      const {error}=await sb.storage.from(DOCS).upload(path,f,{contentType:f.type||undefined});
+      if(error){toast('Не удалось загрузить '+f.name+': '+error.message);continue}
+      added.push({path,name:f.name,size:f.size,date:iso(new Date())});
+    }
+    if(!added.length)return;
+    const cur=find('apartments',a.id)||a;upsert('apartments',{...cur,docs:(cur.docs||[]).concat(added)});toast(added.length>1?'Файлы загружены':'Договор загружен');
+  };
+  inp.click();
+}
+async function docOpen(d){
+  // the tab is opened right on the click, otherwise phones block it, and gets the link a moment later
+  if(!user){toast('Войдите, чтобы открыть договор');return}
+  const w=window.open('','_blank');
+  const {data,error}=await sb.storage.from(DOCS).createSignedUrl(d.path,600);
+  if(error||!data){if(w)w.close();toast('Не удалось открыть файл');return}
+  if(w)w.location.href=data.signedUrl;else location.href=data.signedUrl;
+}
 function housingPage(){
   const list=S.apartments.slice().sort((a,b)=>(b.current-a.current)||(a.from<b.from?1:-1));
   const paid=list.reduce((s,a)=>s+months(a)*a.price,0);
@@ -422,6 +458,7 @@ function housingPage(){
     <div style="font-size:11.5px;color:#555;margin-top:8px">${a.from?dshort(a.from)+' '+parse(a.from).getFullYear():''} – ${a.to?dshort(a.to)+' '+parse(a.to).getFullYear():'сейчас'} · ${months(a)} мес. · всего ${vnd(months(a)*a.price)}</div>
     ${depLine(a)}
     ${a.note?`<div style="font-size:12px;margin-top:6px">${esc(a.note)}</div>`:''}
+    ${aptDocs(a)}
     <div class="apt-foot">${depHeld(a)?`<button class="btn ghost" data-act="depBack" data-id="${a.id}">${ic('check')} Залог вернули</button>`:''}<div class="acts"><button data-act="editApt" data-id="${a.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delApt" data-id="${a.id}" aria-label="Удалить">${ic('trash')}</button></div></div></div>`}).join('')||'<div class="card empty">Квартир пока нет</div>'}</div>`;
 }
 // full-screen photo viewer: arrows, swipe, Esc
@@ -727,6 +764,10 @@ function act(a,el){
     form('Залог вернули',[{k:'date',l:'Дата',t:'date',req:1},{k:'sum',l:'Сколько вернули, ₫',t:'number',req:1},{k:'acc',l:'На счёт',t:'select',o:accOpts('VND','Счёт в донгах'),full:1}],{date:iso(new Date()),sum:a.deposit},o=>{
       const inc={id:uid(),date:o.date,amount:o.sum,cur:'VND',rate:1,vnd:o.sum,acc:o.acc||accFor('VND').id,source:'Возврат залога · '+a.name,kind:'deposit'};
       upsert('incomes',inc);upsert('apartments',{...a,depBack:o.date,depBackSum:o.sum,depInc:inc.id});toast('Залог записан в доходы')});break}
+  case 'docAdd':{const a=find('apartments',id);if(a)docAdd(a);break}
+  case 'docOpen':{const a=find('apartments',id),d=a&&(a.docs||[])[+el.dataset.i];if(d)docOpen(d);break}
+  case 'docDel':{const a=find('apartments',id),i=+el.dataset.i,d=a&&(a.docs||[])[i];if(!d)break;
+    form('Удалить файл «'+d.name+'»?',[],{},()=>{sb.storage.from(DOCS).remove([d.path]).then(({error})=>{if(error){toast('Не удалось удалить: '+error.message);return}const cur=find('apartments',id);upsert('apartments',{...cur,docs:(cur.docs||[]).filter(x=>x.path!==d.path)});toast('Файл удалён')})},null,'Удалить');break}
   case 'depUndo':{const a=find('apartments',id);if(!a)break;
     form('Отменить возврат залога? Запись о нём в доходах удалится.',[],{},()=>{if(a.depInc)remove('incomes',a.depInc);const b={...a};delete b.depBack;delete b.depBackSum;delete b.depInc;upsert('apartments',b)},null,'Отменить возврат');break}
   case 'gallery':{const a=find('apartments',id);if(a)gallery(aptPhotos(a),+el.dataset.i||0);break}

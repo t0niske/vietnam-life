@@ -233,6 +233,19 @@ tr:hover td{background:#fbfaf6}
 .chip.g{background:var(--green-soft);color:#235c36}
 /* apartment deposit: sum, when it comes back, and the button to record the return */
 .dep{display:flex;align-items:center;gap:4px 8px;flex-wrap:wrap;font-size:11.5px;color:#555;margin-top:6px}
+/* rental contract files on an apartment card */
+.docs{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);display:grid;gap:4px;font-size:11.5px}
+.docs-h{font-weight:600;font-size:12px}
+.doc{display:flex;align-items:center;gap:4px}
+.doc-open{flex:1;min-width:0;display:flex;align-items:center;gap:8px;padding:6px 8px;margin-left:-8px;border-radius:8px;text-align:left}
+.doc-open:hover{background:var(--soft)}
+.doc-open span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.doc-open small{color:var(--muted);font-size:10.5px}
+.doc-open svg.i{width:16px;height:16px;color:var(--green)}
+.doc-del{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;color:var(--muted)}
+.doc-del:hover{background:var(--soft);color:var(--red)}
+.doc-del svg.i{width:15px;height:15px}
+.docs .link{justify-self:start;padding:4px 0;color:var(--green)}
 .apt-foot{display:flex;align-items:center;gap:8px;margin-top:8px}
 .apt-foot .acts{margin-left:auto}
 button.chip{cursor:pointer}
