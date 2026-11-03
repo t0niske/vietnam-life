@@ -186,7 +186,7 @@ const accById=id=>S.accounts.find(a=>a.id===id);
 function budgetInfo(){
   const now=mkey(new Date());let gross=Number(S.settings.budget)||0,src='';
   if(S.settings.budgetAuto){
-    const inc=[1,2,3].map(n=>shiftM(now,-n)).map(m=>S.incomes.filter(i=>String(i.date).startsWith(m)).reduce((s,i)=>s+(Number(i.vnd)||0),0)).filter(v=>v>0);
+    const inc=[1,2,3].map(n=>shiftM(now,-n)).map(m=>S.incomes.filter(i=>i.kind!=='deposit'&&String(i.date).startsWith(m)).reduce((s,i)=>s+(Number(i.vnd)||0),0)).filter(v=>v>0);
     if(inc.length>=2){gross=inc.reduce((a,b)=>a+b,0)/inc.length;src='средний доход за '+inc.length+' мес.'}
     else if(S.accounts.length){loadLive();gross=balances().reduce((s,b)=>s+b.bal*rateOf(b.acc.cur),0)+sum(monthExp(now));src='деньги на счетах'}
   }
@@ -395,13 +395,23 @@ function analyticsPage(){
 
 /* ---------- housing ---------- */
 function months(a){const f=parse(a.from),t=a.to?parse(a.to):today();return Math.max(1,Math.round((t-f)/(30.44*864e5)))}
+// the deposit stays with the landlord until we move out; what comes back goes to an account as an income
+// of kind 'deposit', which the budget doesn't count as earnings (the bot does the same)
+const depHeld=a=>a.deposit&&!a.depBack?Number(a.deposit)||0:0;
+function depLine(a){
+  if(!a.deposit)return '';
+  const kept=a.depBack&&a.depBackSum<a.deposit?a.deposit-a.depBackSum:0;
+  return `<div class="dep"><span>Залог <b class="num">${vnd(a.deposit)}</b></span>${a.depBack
+    ?`<button class="chip g" data-act="depUndo" data-id="${a.id}" title="Отменить возврат">вернули ${dshort(a.depBack)}${kept?' · удержали '+vnd(kept):''}</button>`
+    :`<span class="muted">вернётся при выезде${a.to&&daysTo(a.to)>=0?', '+dshort(a.to):''}</span>`}</div>`;
+}
 function housingPage(){
   const list=S.apartments.slice().sort((a,b)=>(b.current-a.current)||(a.from<b.from?1:-1));
   const paid=list.reduce((s,a)=>s+months(a)*a.price,0);
-  const a=curApt();
+  const a=curApt(),held=list.reduce((s,x)=>s+depHeld(x),0);
   return `<div class="ptitle"><h2>Жилье</h2><div class="sp"><button class="btn" data-act="addApt">${ic('plus')} Добавить квартиру</button></div></div>
   <div class="kpis"><div class="card kpi"><small>Текущая аренда</small><b class="num">${a?vnd(a.price):'—'}</b><span class="muted num">${a?usd(a.price)+' / месяц':''}</span></div>
-  <div class="card kpi"><small>Квартир за всё время</small><b class="num">${list.length}</b></div>
+  <div class="card kpi"><small>Залог у хозяина</small><b class="num">${vnd(held)}</b><span class="muted">${held?'вернётся при выезде':list.some(x=>x.depBack)?'все залоги вернули':'залога нет'}</span></div>
   <div class="card kpi"><small>Всего на аренду</small><b class="num">${vnd(paid)}</b><span class="muted num">${usd(paid)}</span></div>
   <div class="card kpi"><small>Аренда + коммуналка в месяц</small><b class="num">${vnd((a?a.price:0)+(S.utilities.length?utilTotal(S.utilities.slice().sort((x,y)=>x.month<y.month?1:-1)[0]):0))}</b><span class="muted">по последнему счёту</span></div></div>
   <div class="gridc">${list.map(a=>{const ph=aptPhotos(a);return `<div class="card apt-card">${ph.length?`<button class="cover-btn" data-act="gallery" data-id="${a.id}" data-i="0" aria-label="Открыть фото"><img class="cover" src="${imgFor(ph[0])}" alt=""><span class="gcount">${ph.length} фото</span></button>
@@ -410,9 +420,9 @@ function housingPage(){
     <div class="num" style="font-size:16px;font-weight:600;margin:4px 0">${vnd(a.price)} <span class="muted" style="font-size:11px;font-weight:400">/ месяц</span></div>
     <div class="apt-meta"><span>${ic('bed')}${a.rooms} комн.</span><span>${ic('area')}${a.area} м²</span><span>${ic('eye')}${esc(a.view)}</span></div>
     <div style="font-size:11.5px;color:#555;margin-top:8px">${a.from?dshort(a.from)+' '+parse(a.from).getFullYear():''} – ${a.to?dshort(a.to)+' '+parse(a.to).getFullYear():'сейчас'} · ${months(a)} мес. · всего ${vnd(months(a)*a.price)}</div>
-    ${a.deposit?`<div style="font-size:11.5px;color:#555">Депозит: ${vnd(a.deposit)}</div>`:''}
+    ${depLine(a)}
     ${a.note?`<div style="font-size:12px;margin-top:6px">${esc(a.note)}</div>`:''}
-    <div class="acts" style="margin-top:8px"><button data-act="editApt" data-id="${a.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delApt" data-id="${a.id}" aria-label="Удалить">${ic('trash')}</button></div></div>`}).join('')||'<div class="card empty">Квартир пока нет</div>'}</div>`;
+    <div class="apt-foot">${depHeld(a)?`<button class="btn ghost" data-act="depBack" data-id="${a.id}">${ic('check')} Залог вернули</button>`:''}<div class="acts"><button data-act="editApt" data-id="${a.id}" aria-label="Изменить">${ic('edit')}</button><button data-act="delApt" data-id="${a.id}" aria-label="Удалить">${ic('trash')}</button></div></div></div>`}).join('')||'<div class="card empty">Квартир пока нет</div>'}</div>`;
 }
 // full-screen photo viewer: arrows, swipe, Esc
 function gallery(list,i){
@@ -625,14 +635,14 @@ function searchRender(){
 }
 
 /* ---------- modal form ---------- */
-function form(title,fields,vals,onSave,onDel){
+function form(title,fields,vals,onSave,onDel,ok){
   const bg=document.createElement('div');bg.className='modal-bg';
   bg.innerHTML=`<div class="modal" role="dialog" aria-modal="true"><h3>${esc(title)}</h3><form class="fgrid">${fields.map(f=>{const v=vals[f.k]!=null?vals[f.k]:(f.def!=null?f.def:'');const id='f-'+f.k;
     if(f.t==='select')return `<label class="field ${f.full?'full':''}">${f.l}<select id="${id}" name="${f.k}">${f.o.map(o=>{const [val,lab]=Array.isArray(o)?o:[o,o];return `<option value="${esc(val)}" ${String(val)===String(v)?'selected':''}>${esc(lab)}</option>`}).join('')}</select></label>`;
     if(f.t==='check')return `<label class="field ${f.full?'full':''}" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="${id}" name="${f.k}" ${v?'checked':''}>${f.l}</label>`;
     if(f.t==='area')return `<label class="field full">${f.l}<textarea id="${id}" name="${f.k}" rows="6">${esc(v)}</textarea></label>`;
     return `<label class="field ${f.full?'full':''}">${f.l}<input id="${id}" name="${f.k}" type="${f.t||'text'}" value="${esc(v)}" ${f.req?'required':''} ${f.t==='number'?'step="any"':''}></label>`}).join('')}
-    <div class="mfoot full">${onDel?`<button type="button" class="btn danger l" data-x="del">${ic('trash')} Удалить</button>`:''}<button type="button" class="btn ghost" data-x="cancel">Отмена</button><button class="btn" type="submit">${ic('check')} Сохранить</button></div></form></div>`;
+    <div class="mfoot full">${onDel?`<button type="button" class="btn danger l" data-x="del">${ic('trash')} Удалить</button>`:''}<button type="button" class="btn ghost" data-x="cancel">Отмена</button><button class="btn" type="submit">${ic('check')} ${ok||'Сохранить'}</button></div></form></div>`;
   document.body.appendChild(bg);
   const close=()=>bg.remove();
   bg.addEventListener('click',e=>{if(e.target===bg)close();const x=e.target.closest('[data-x]');if(!x)return;if(x.dataset.x==='cancel')close();if(x.dataset.x==='del'){if(x.dataset.sure){onDel();close()}else{x.dataset.sure='1';x.innerHTML='Точно удалить?'}}});
@@ -659,7 +669,7 @@ const find=(sec,id)=>S[sec].find(x=>x.id===id);
 
 const F={
  expense:[{k:'date',l:'Дата',t:'date',req:1},{k:'amount',l:'Сумма, ₫',t:'number',req:1},{k:'cat',l:'Категория',t:'select',o:CATS.map(c=>c[0]),full:1},{k:'note',l:'Описание',full:1}],
- apt:[{k:'city',l:'Город',req:1},{k:'name',l:'Название / район',req:1},{k:'price',l:'Аренда в месяц, ₫',t:'number'},{k:'deposit',l:'Депозит, ₫',t:'number'},{k:'rooms',l:'Комнат',t:'number'},{k:'area',l:'Площадь, м²',t:'number'},{k:'view',l:'Вид',full:1},{k:'from',l:'Заехали',t:'date'},{k:'to',l:'Выехали',t:'date'},{k:'img',l:'Фото',t:'select',o:[['home1','Наша квартира'],['apt_main','Фото 1'],['apt1','Фото 2'],['apt2','Фото 3'],['apt3','Фото 4'],['apt4','Фото 5']]},{k:'current',l:'Живём сейчас',t:'check'},{k:'note',l:'Заметка',full:1}],
+ apt:[{k:'city',l:'Город',req:1},{k:'name',l:'Название / район',req:1},{k:'price',l:'Аренда в месяц, ₫',t:'number'},{k:'deposit',l:'Залог, ₫',t:'number'},{k:'rooms',l:'Комнат',t:'number'},{k:'area',l:'Площадь, м²',t:'number'},{k:'view',l:'Вид',full:1},{k:'from',l:'Заехали',t:'date'},{k:'to',l:'Выехали',t:'date'},{k:'img',l:'Фото',t:'select',o:[['home1','Наша квартира'],['apt_main','Фото 1'],['apt1','Фото 2'],['apt2','Фото 3'],['apt3','Фото 4'],['apt4','Фото 5']]},{k:'current',l:'Живём сейчас',t:'check'},{k:'note',l:'Заметка',full:1}],
  util:[{k:'month',l:'Месяц',t:'month',req:1},{k:'kwh',l:'Электричество, кВт·ч',t:'number'},...UTIL.map(([k,l])=>({k,l:l+', ₫',t:'number'}))],
  goal:[{k:'title',l:'Цель',req:1,full:1},{k:'saved',l:'Накоплено, $',t:'number'},{k:'target',l:'Нужно, $',t:'number'},{k:'icon',l:'Иконка',t:'select',o:GOAL_ICONS},{k:'featured',l:'Показывать на главной',t:'check',full:1}],
  event:[{k:'title',l:'Название',req:1,full:1},{k:'date',l:'Дата',t:'date',req:1},{k:'type',l:'Тип',t:'select',o:Object.entries(EVT).map(([k,v])=>[k,v[1]])},{k:'from',l:'Начало (пусто — весь день)',t:'time'},{k:'to',l:'Конец',t:'time'}],
@@ -713,6 +723,12 @@ function act(a,el){
   case 'addApt':form('Новая квартира',F.apt,{img:'apt1',rooms:1,from:iso(new Date())},o=>{if(o.current)S.apartments.forEach(x=>x.current=false);upsert('apartments',{id:uid(),...o})});break;
   case 'editApt':{const e=find('apartments',id);form('Квартира',F.apt,e,o=>{if(o.current)S.apartments.forEach(x=>{if(x.id!==id)x.current=false});upsert('apartments',{...e,...o})},()=>remove('apartments',id));break}
   case 'delApt':remove('apartments',id);break;
+  case 'depBack':{const a=find('apartments',id);if(!a)break;
+    form('Залог вернули',[{k:'date',l:'Дата',t:'date',req:1},{k:'sum',l:'Сколько вернули, ₫',t:'number',req:1},{k:'acc',l:'На счёт',t:'select',o:accOpts('VND','Счёт в донгах'),full:1}],{date:iso(new Date()),sum:a.deposit},o=>{
+      const inc={id:uid(),date:o.date,amount:o.sum,cur:'VND',rate:1,vnd:o.sum,acc:o.acc||accFor('VND').id,source:'Возврат залога · '+a.name,kind:'deposit'};
+      upsert('incomes',inc);upsert('apartments',{...a,depBack:o.date,depBackSum:o.sum,depInc:inc.id});toast('Залог записан в доходы')});break}
+  case 'depUndo':{const a=find('apartments',id);if(!a)break;
+    form('Отменить возврат залога? Запись о нём в доходах удалится.',[],{},()=>{if(a.depInc)remove('incomes',a.depInc);const b={...a};delete b.depBack;delete b.depBackSum;delete b.depInc;upsert('apartments',b)},null,'Отменить возврат');break}
   case 'gallery':{const a=find('apartments',id);if(a)gallery(aptPhotos(a),+el.dataset.i||0);break}
   case 'addUtil':form('Коммуналка за месяц',F.util,{month:mkey(new Date()),internet:250000,garbage:120000},o=>{const ex=S.utilities.find(u=>u.month===o.month);upsert('utilities',{id:ex?ex.id:uid(),...o})});break;
   case 'editUtil':{const e=find('utilities',id);form('Коммуналка',F.util,e,o=>upsert('utilities',{...e,...o}),()=>remove('utilities',id));break}

@@ -231,7 +231,7 @@ async function budgetOf(c: Ctx, st: Item) {
   let gross = Number(st.budget) || 70000000, src = "";
   if (st.budgetAuto) {
     const inc: number[] = [];
-    for (let m = prevMonth(now), n = 0; n < 3; n++, m = prevMonth(m)) inc.push(sumOf(c.incomes.filter((i) => String(i.date).startsWith(m)), "vnd"));
+    for (let m = prevMonth(now), n = 0; n < 3; n++, m = prevMonth(m)) inc.push(sumOf(c.incomes.filter((i) => i.kind !== "deposit" && String(i.date).startsWith(m)), "vnd"));
     const got = inc.filter((v) => v > 0);
     if (got.length >= 2) { gross = got.reduce((a, b) => a + b, 0) / got.length; src = `средний доход за ${got.length} мес.`; }
     else if (c.accounts.length) {
@@ -265,7 +265,7 @@ function balances(c: Ctx): { acc: Item; bal: number }[] {
 
 /* ---------- text -> actions: Groq free tier, or Claude if an Anthropic key is set instead ---------- */
 const KINDS = ["expense", "income", "exchange", "balance", "rate", "event", "note", "health", "utility", "apartment", "trip", "trip_item", "meal",
-  "goal", "goal_add", "weight", "activity", "coach", "meal_plan", "recipe", "shopping", "send", "done", "reschedule", "delete", "useful", "setting", "report", "ask"];
+  "goal", "goal_add", "deposit_back", "weight", "activity", "coach", "meal_plan", "recipe", "shopping", "send", "done", "reschedule", "delete", "useful", "setting", "report", "ask"];
 const SECTIONS = ["expenses", "incomes", "transfers", "events", "notes", "goals", "trips", "health", "apartments", "weights"];
 const REPORTS = ["expenses", "money", "events", "goals", "notes", "weight", "week", "month"];
 const str = { type: "string" }, numb = { type: "number" };
@@ -337,7 +337,7 @@ ${lines(ev.map((e) => `- ${q(e.title)} ${e.date}${e.from ? " " + e.from : ""}`))
 Поездки:
 ${lines(c.trips.map((t) => `- ${q(t.city)} ${t.from}…${t.to}; чек-лист: ${(t.checklist ?? []).map((i: Item) => q(i.t) + (i.d ? " (сделано)" : "")).join(", ") || "пусто"}`))}
 Квартиры:
-${lines(c.apartments.map((a) => `- ${q(a.name)}, ${a.city}${a.current ? " (живут сейчас)" : ""}`))}
+${lines(c.apartments.map((a) => `- ${q(a.name)}, ${a.city}${a.current ? " (живут сейчас)" : ""}${depText(a)}`))}
 Последние расходы:
 ${lines(exp.map((e) => `- ${e.date} ${e.amount} VND ${e.cat} ${q(e.note)}`))}
 Последние взвешивания:
@@ -368,6 +368,7 @@ const prompt = (c: Ctx) => `Ты помощник пары, которая жи�
 - utility — коммунальный счёт («за свет 900 тысяч», «вода за октябрь 150к», «нагорело 320 киловатт»). month — за какой месяц счёт (YYYY-MM; если не сказано — текущий), util_kind (electricity — свет/электричество, water — вода, internet — интернет/wi-fi, garbage — мусор, service — сервис/обслуживание кондо), amount, currency, kwh — киловатт-часы, если названы.
   Расход в бюджет добавится сам, отдельный expense для коммуналки не нужен.
 - apartment — новая квартира. city, title — название или район, amount + currency — аренда в месяц, deposit — депозит, rooms, area (м²), date — заезд, date_to — выезд, text — заметка, flag — true, если живут там сейчас или переезжают туда.
+- deposit_back — хозяин вернул залог (депозит) за квартиру («залог вернули», «вернули депозит 12 миллионов, 500 тысяч удержали за уборку»). title — квартира из списка ниже, если названа; amount + currency — сколько вернули на руки (если не сказано — весь залог), account — куда положили, date.
 - trip — новая поездка. city — куда, date — с какого числа, date_to — по какое, amount + currency — бюджет, text — заметка.
 - trip_item — пункт в чек-лист поездки («в Дананг не забыть забронировать байк»). city — поездка из списка ниже, text — пункт.
 - meal — блюдо в недельный план питания. weekday (0 — понедельник … 6 — воскресенье; сегодня ${todayIdx()}), meal (${MEALS.join(", ")}), title — блюдо, text — дополнение, kcal. На несколько дней — по record на каждый день.
@@ -396,7 +397,7 @@ ${known(c)}
 - Одно сообщение может содержать несколько действий: верни их все.
 - Учитывай предыдущие реплики разговора: «нет, ты отправь ей», «и ещё одно такое же», «перенеси его на завтра» относятся к сказанному раньше.
 - Если сообщение — просто разговор, вопрос или просьба, которую нельзя записать, верни один record с kind "ask" и text — вопрос целиком.
-- Для goal_add, done, reschedule, delete и trip_item копируй title и city точно из списков выше. Если подходящей записи нет, ничего не выдумывай: верни пустой records и спроси в question, что имелось в виду.
+- Для goal_add, deposit_back, done, reschedule, delete и trip_item копируй title и city точно из списков выше. Если подходящей записи нет, ничего не выдумывай: верни пустой records и спроси в question, что имелось в виду.
 - Поля, которые не нужны для этого вида, оставляй пустой строкой, 0, false; weekday — -1.
 - Если смысл непонятен, верни пустой records и короткий уточняющий вопрос по-русски в question; иначе question пустой.`;
 
@@ -452,6 +453,8 @@ async function extract(input: string, c: Ctx, history: Msg[] = []): Promise<{ re
 
 /* ---------- apply one action ---------- */
 type Done = { line: string; ops: Op[] };
+// the deposit for the AI's context: how much and whether it is back
+const depText = (a: Item) => a.deposit ? `, залог ${a.deposit} ₫ ${a.depBack ? "вернули " + a.depBack + (a.depBackSum ? ` (${a.depBackSum} ₫)` : "") : "у хозяина, вернётся при выезде"}` : "";
 const miss = (what: string, name: string): Done => ({ line: `❓ Не нашёл ${what} ${q(esc(name))}, ничего не изменил`, ops: [] });
 const noRate = (c: string): Done => ({ line: `❓ Не знаю курс ${c}: задайте его, например «курс ${c} 280 донгов»`, ops: [] });
 
@@ -585,6 +588,22 @@ async function apply(r: Rec, c: Ctx): Promise<Done> {
       if (item.current) for (const a of (await items("apartments")).filter((a) => a.current)) ops.push(await put("apartments", a, { ...a, current: false }));
       ops.push(await add("apartments", item));
       return { line: `🏠 Квартира ${esc(item.name)}${item.city && item.city !== item.name ? ", " + esc(item.city) : ""}${vnd ? " · " + money(vnd) + " в месяц" : ""}${item.current ? " · живём сейчас" : ""}`, ops };
+    }
+    case "deposit_back": {
+      // the named apartment, otherwise the current one or the latest whose deposit is still with the landlord
+      const list = await items("apartments");
+      const held = list.filter((a) => a.deposit && !a.depBack).sort((x, y) => (Number(y.current) - Number(x.current)) || (x.from < y.from ? 1 : -1));
+      const a = r.title ? pick(list, r.title, NAME.apartments) : held[0];
+      if (!a) return r.title ? miss("квартиру", r.title) : { line: "❓ Не нашёл квартиру, за которую залог ещё у хозяина", ops: [] };
+      if (a.depBack) return { line: `ℹ️ Залог за ${q(esc(a.name))} уже вернули ${dshort(a.depBack)}`, ops: [] };
+      // the money comes in as an income of kind deposit, in the currency it was given back in
+      const cur = r.amount ? r.currency : "VND", got = r.amount || Number(a.deposit) || 0, inVndSum = r.amount ? vnd : got;
+      if (!got) return { line: "❓ Скажите, сколько вернули", ops: [] };
+      const acc = await account(r.account, cur);
+      const inc = { id: uid(), date, amount: got, cur, rate: r.amount ? rate : 1, vnd: inVndSum, acc: acc.acc.id, source: "Возврат залога · " + a.name, kind: "deposit" };
+      const ops = [...acc.ops, await add("incomes", inc), await put("apartments", a, { ...a, depBack: date, depBackSum: inVndSum, depInc: inc.id })];
+      const kept = (Number(a.deposit) || 0) - inVndSum;
+      return { line: `🔑 Залог за ${q(esc(a.name))} вернули: ${cash(got, cur)} · ${esc(acc.acc.name)} · ${dshort(date)}${kept > 0 ? " · удержали " + money(kept) : ""}`, ops };
     }
     case "trip": {
       const to = isDate(r.date_to) ? r.date_to : date;
@@ -842,7 +861,7 @@ ${lines(c.transfers.slice(-10).map((t) => `${t.date} отдали ${t.out} → �
 Остатки на счетах:
 ${lines(bals)}
 Цели (в $): ${c.goals.map((g) => `${g.title}: ${g.saved || 0} из ${g.target || 0}`).join("; ") || "нет"}
-Квартира: ${apt ? `${apt.city}, ${apt.name}, аренда ${apt.price} ₫/мес, с ${apt.from}${apt.note ? ", " + apt.note : ""}` : "не указана"}
+Квартира: ${apt ? `${apt.city}, ${apt.name}, аренда ${apt.price} ₫/мес, с ${apt.from}${depText(apt)}${apt.note ? ", " + apt.note : ""}` : "не указана"}
 Коммуналка по месяцам: ${c.utilities.slice(-6).map((u) => `${u.month}: ${Object.keys(UTIL).reduce((a, k) => a + (Number(u[k]) || 0), 0)} ₫${u.kwh ? ", " + u.kwh + " кВт·ч" : ""}`).join("; ") || "нет"}
 События (неделя назад — месяц вперёд):
 ${lines(ev.map((e) => `${e.date}${e.from ? " " + e.from : ""} ${e.title}${e.done ? " (сделано)" : ""}`))}
