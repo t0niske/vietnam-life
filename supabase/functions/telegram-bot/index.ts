@@ -355,7 +355,9 @@ const prompt = (c: Ctx) => `Ты помощник пары, которая жи�
 Деньги: amount — число, как сказано («150 тысяч», «150к» = 150000, «полтора миллиона», «1,5 ляма» = 1500000), currency — его валюта: VND (донги, если валюта не названа), RUB (рубли), KZT (тенге), USD (доллары), EUR (евро), THB (баты). В донги не пересчитывай, это сделает бот.
 
 Виды действий (kind) и их поля:
-- expense — потратили деньги. date, amount, currency, category (одна из: ${CATS.join(", ")}), title — что купили, коротко; account — счёт из списка, если назван или назван банк/карта.
+- expense — потратили деньги. date, amount, currency, category (одна из: ${CATS.join(", ")}), title — что купили, коротко; account — счёт из списка, если назван или назван банк; «с карты», «картой» — account "карта".
+  currency — только если валюта названа явно («тенге», «рублей», «$»); если не названа — VND. «С карты» валюту не меняет: сумма всё равно в донгах.
+  Вода, купленная в магазине, — «Питание»; «Коммуналка» — только счета за свет, воду по счётчику, интернет, мусор.
   account всегда копируй точно из списка «Счета». Банк узнавай по валюте: Kaspi/Каспи/Халык — счёт в KZT, Тинькофф/Т-Банк/Сбер/Альфа — счёт в RUB, наличные во Вьетнаме — счёт в VND. currency — валюта цены, а не карты: «кофе 100 тысяч с каспи» — это 100000 VND с счёта в KZT.
 - income — получили деньги: зарплата, перевод от кого-то, кэшбэк, продажа. date, amount, currency, title — источник, коротко с заглавной буквы («Зарплата»); account — счёт, если назван.
 - exchange — обмен валюты или перевод между своими счетами («поменял 50 тысяч рублей на тенге, получил 270 тысяч, комиссия 500 рублей»). amount + currency — сколько отдали, amount_to + currency_to — сколько получили, fee + fee_currency — комиссия, если названа; account / account_to — счета, если названы; title — заметка.
@@ -462,9 +464,19 @@ const noRate = (c: string): Done => ({ line: `❓ Не знаю курс ${c}: �
 
 // banks named by voice, by the currency of their cards
 const BANKS: [RegExp, string][] = [[/kaspi|каспи|halyk|халык|freedom|фридом/i, "KZT"], [/tinkoff|тинько|т-банк|сбер|альфа|втб|озон/i, "RUB"], [/налич|кэш|cash/i, "VND"]];
+// a sum said in a currency other than dong, and the kinds whose sum is in dong unless one is said
+const CUR_WORD = /тенге|тг(?![а-яё])|₸|kzt|рубл|руб(?![а-яё])|₽|rub|доллар|бакс|\$|usd|евро|€|eur|бат(?![а-яё])|батов|бата|thb|юан/i;
+const DONG_KINDS = ["expense", "health", "utility", "apartment", "trip", "goal", "goal_add", "deposit_back"];
+const CARD_SAID = /с карт|картой|по карт|карточк/i;
 // the account money comes from or goes to: the named one, else the first one in that currency, else a new one
 async function account(name: string, currency: string): Promise<{ acc: Item; ops: Op[] }> {
   const list = await items("accounts");
+  // «с карты»: the account set as the card in the site's settings, otherwise the tenge one
+  if (name && /карт|card/i.test(name)) {
+    const st = await section("settings");
+    const card = list.find((a) => a.id === st.cardAcc) ?? list.find((a) => a.cur === "KZT");
+    if (card) return { acc: card, ops: [] };
+  }
   // a bank that has no account of its own name is the account in its card's currency
   const bankCur = name ? BANKS.find(([re]) => re.test(name))?.[1] : undefined;
   const acc = (name && pick(list, name, (a) => a.name)) || (bankCur && list.find((a) => a.cur === bankCur)) || (!name && list.find((a) => a.cur === currency));
@@ -1387,6 +1399,9 @@ async function handle(u: any) {
         if (row) undo.push(row.id);
         continue;
       }
+      // a sum without a named currency is in dong; paid «с карты» it stays in dong and is charged to the card's account at the rate
+      if (DONG_KINDS.includes(r.kind) && r.currency !== "VND" && !CUR_WORD.test(input)) r.currency = "VND";
+      if (r.kind === "expense" && !r.account && CARD_SAID.test(input) && records.filter((x) => x.kind === "expense").length === 1) r.account = "карта";
       // the AI sometimes re-reads the expenses it was shown: one that is already recorded is not added again
       // unless the message itself names a sum
       if (r.kind === "expense" && !HAS_SUM.test(input)) {
