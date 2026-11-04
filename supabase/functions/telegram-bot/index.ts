@@ -387,7 +387,7 @@ const prompt = (c: Ctx) => `Ты помощник пары, которая жи�
 - recipe — рецепт или как приготовить блюдо («как готовить фо с курицей», «рецепт на ужин»). title — блюдо.
 - shopping — показать список покупок.
 - send — написать или переслать сообщение другому человеку, подключённому к боту («напиши Насте, что я задержусь», «отправь Насте список покупок», «нет, ты отправь это Насте»). to — имя из списка «Подключены к боту»; text — что передать, коротко, от лица того, кто пишет; переслать список покупок — section "shopping", меню на сегодня — section "menu"; переслать твой предыдущий ответ из разговора — text пустой.
-- report — вопрос о данных, а не новая запись («сколько потратили в этом месяце», «сколько денег на счетах», «что у нас на неделе», «сколько накопили», «что надо сделать», «как мой вес», «отчёт за неделю», «итоги прошлого месяца»). section: expenses (month — какой месяц), money (доходы, расходы и остатки на счетах; month), events, goals, notes, weight, week (отчёт за последние 7 дней) или month (полный отчёт за месяц; month).
+- report — вопрос о данных, а не новая запись («сколько потратили в этом месяце», «сколько денег на счетах», «что у нас на неделе», «сколько накопили», «что надо сделать», «как мой вес», «отчёт за неделю», «итоги прошлого месяца»). section: expenses (month — какой месяц; date — если спрашивают про конкретный день: «за сегодня», «вчера», «за 4 ноября»), money (доходы, расходы и остатки на счетах; month), events, goals, notes, weight, week (отчёт за последние 7 дней) или month (полный отчёт за месяц; month).
 - ask — любой другой вопрос, на который нужен обдуманный ответ, а не готовая сводка: сравнения, причины, советы, прогнозы, расчёты («на что мы больше всего тратим и где сэкономить», «хватит ли денег до конца месяца», «сколько в среднем уходит на еду в неделю», «когда накопим на айфон», «как изменились траты за три месяца»), а также вопросы о жизни во Вьетнаме. text — вопрос целиком своими словами. Если вопрос подходит под report — используй report, иначе ask.
 Бот сам присылает напоминания о делах за час, утреннюю сводку, вечером напоминание записать расходы и отчёт за день, в воскресенье — за неделю, 1-го числа — за прошлый месяц. Время меняется через setting (notifyMorning, notifyRemind, notifyReport, notifyMonthly; value — HH:MM или off, чтобы выключить).
 
@@ -399,6 +399,7 @@ ${known(c)}
 - Учитывай предыдущие реплики разговора: «нет, ты отправь ей», «и ещё одно такое же», «перенеси его на завтра» относятся к сказанному раньше.
 - Если сообщение — просто разговор, вопрос или просьба, которую нельзя записать, верни один record с kind "ask" и text — вопрос целиком.
 - Для goal_add, deposit_back, done, reschedule, delete и trip_item копируй title и city точно из списков выше. Если подходящей записи нет, ничего не выдумывай: верни пустой records и спроси в question, что имелось в виду.
+- Никогда не записывай заново траты из списка «Последние расходы» и из прошлых ответов бота. «Покажи», «сколько», «какие», «все расходы за …», «за сегодня» — это report, а не expense; новый expense только когда в сообщении названа сумма.
 - Поля, которые не нужны для этого вида, оставляй пустой строкой, 0, false; weekday — -1.
 - Если смысл непонятен, верни пустой records и короткий уточняющий вопрос по-русски в question; иначе question пустой.`;
 
@@ -734,6 +735,7 @@ async function report(r: Rec, c: Ctx): Promise<string> {
     const open = c.notes.filter((n) => !n.done);
     return open.length ? "📝 Надо сделать:\n" + open.map((n) => `• ${esc(n.text)}`).join("\n") : "Все заметки закрыты 🎉";
   }
+  if (r.section === "expenses" && isDate(r.date)) return dayList(c, r.date);
   const exp = c.expenses.filter((e) => String(e.date).startsWith(m));
   const spent = sumOf(exp, "amount");
   if (r.section === "money") {
@@ -751,6 +753,23 @@ async function report(r: Rec, c: Ctx): Promise<string> {
   return out;
 }
 
+// days from this one to the end of its month, both included
+const daysLeftFrom = (day: string) => Number(addDays(addDays(day.slice(0, 7) + "-28", 4).slice(0, 7) + "-01", -1).slice(8)) - Number(day.slice(8)) + 1;
+// what is left of the month's budget, said per day; empty for another month
+function leftText(c: Ctx, day: string): string {
+  if (day.slice(0, 7) !== today().slice(0, 7)) return "";
+  const left = c.budget - sumOf(c.expenses.filter((e) => String(e.date).startsWith(day.slice(0, 7))), "amount"), n = daysLeftFrom(today());
+  return left >= 0 ? `До конца месяца на траты осталось ${money(left)}: примерно ${money(left / n)} в день` : `Бюджет месяца превышен на ${money(-left)}`;
+}
+// one day's expenses one by one («покажи все расходы за сегодня»)
+function dayList(c: Ctx, day: string): string {
+  const list = c.expenses.filter((e) => e.date === day);
+  if (!list.length) return `За ${dshort(day)} расходов не записано.`;
+  const accName = (id: string) => c.accounts.find((a) => a.id === id)?.name;
+  const rows = list.map((e) => `\n• ${money(+e.amount || 0)}${e.cur && e.cur !== "VND" ? ` (${cash(+e.orig || 0, e.cur)})` : ""} · ${esc(e.cat)}${e.note ? " · " + esc(e.note) : ""}${accName(e.acc) ? " · " + esc(accName(e.acc)) : ""}`).join("");
+  const left = leftText(c, day);
+  return `💸 Расходы за ${dshort(day)}: <b>${money(sumOf(list, "amount"))}</b>${rows}${left ? "\n\n" + left : ""}`;
+}
 // where the budget comes from and how much of it goes to the cushion, e.g. " (деньги на счетах, 20% — 9 000 000 ₫ на подушку)"
 const budgetNote = (c: Ctx) => {
   const parts = [c.budgetSrc, c.savePct ? `${c.savePct}% — ${money(c.budgetGross - c.budget)} на подушку` : ""].filter(Boolean);
@@ -900,7 +919,7 @@ async function ask(question: string, c: Ctx, history: Msg[] = []): Promise<strin
 /* ---------- a tip after every recorded expense ---------- */
 const TIP_SYSTEM = `Ты финансовый помощник семьи, которая живёт во Вьетнаме (Нячанг). После каждой новой траты давай один короткий практичный совет: 1–2 предложения, не длиннее 220 символов.
 Опирайся на цифры ниже: темп трат, остаток бюджета на день, сравнение категории с прошлым месяцем. Если трата разумная и в бюджет укладывается, скажи это одной фразой и подскажи, как во Вьетнаме тратить на такое меньше (рынки вместо супермаркетов, Grab Bike вместо такси, местная еда, торг и т. п.). Если тратят быстрее, чем позволяет бюджет, предупреди и назови сумму на день.
-Не морализируй, не повторяй сумму самой траты, без приветствий, эмодзи и markdown. Суммы пиши с пробелами между разрядами и знаком ₫.`;
+Даже если трат несколько, дай один общий совет на всё сообщение, одним абзацем. Не морализируй, не повторяй сумму самой траты, без приветствий, эмодзи и markdown. Суммы пиши с пробелами между разрядами и знаком ₫.`;
 // one short tip from the AI with this month's numbers; without the AI, or when it is busy, a plain line about what is left per day
 async function expenseTip(ids: string[], c: Ctx): Promise<string> {
   const all = await items("expenses");
@@ -909,23 +928,25 @@ async function expenseTip(ids: string[], c: Ctx): Promise<string> {
   const day = today(), m = day.slice(0, 7), pm = prevMonth(m);
   const now = spentIn({ ...c, expenses: all }, m + "-01", day);
   const before = spentIn({ ...c, expenses: all }, pm + "-01", pm + day.slice(7));
-  const daysLeft = Number(addDays(addDays(m + "-28", 4).slice(0, 7) + "-01", -1).slice(8)) - Number(day.slice(8)) + 1;
+  const daysLeft = daysLeftFrom(day);
   const left = c.budget - now.total;
   const plain = left >= 0
-    ? `💡 До конца месяца на траты осталось ${money(left)}: примерно ${money(left / daysLeft)} в день`
+    ? `💡 ${leftText({ ...c, expenses: all }, day)}`
     : `💡 Бюджет месяца уже превышен на ${money(-left)}: необязательные траты лучше отложить до следующего месяца`;
   const catOf = (x: { cats: [string, number][] }, k: string) => x.cats.find(([n]) => n === k)?.[1] ?? 0;
   const facts = [
     `Только что записали: ${added.map((e) => `${e.amount} ₫, ${e.cat}${e.note ? ", " + e.note : ""}`).join("; ")}`,
     `Сегодня ${day}, до конца месяца ${daysLeft} дн. (включая сегодня)`,
-    `Бюджет на траты в этом месяце ${c.budget} ₫, уже потрачено ${now.total} ₫, осталось ${left} ₫ — это ${Math.round(left / daysLeft)} ₫ в день`,
+    `Бюджет на траты в этом месяце ${c.budget} ₫, уже потрачено ${now.total} ₫, ` + (left >= 0 ? `осталось ${left} ₫ — это ${Math.round(left / daysLeft)} ₫ в день` : `бюджет превышен на ${-left} ₫`),
     ...[...new Set(added.map((e) => String(e.cat)))].map((k) => `${k}: в этом месяце ${catOf(now, k)} ₫, за те же дни прошлого месяца ${catOf(before, k)} ₫`),
     c.savePct ? `На подушку безопасности откладывают ${c.savePct}% (уже вычтено из бюджета)` : "",
   ].filter(Boolean).join("\n");
   try {
     const t = (await groqCall([{ role: "system", content: TIP_SYSTEM }, { role: "user", content: facts }], { maxTokens: 900, temperature: 0.6, noWait: true }))
       .replace(/\*\*|^#+\s*/gm, "").trim();
-    if (t) return "💡 " + esc(t).slice(0, 400);
+    // the free models sometimes repeat the tip for every expense: only the first paragraph, at most two sentences
+    const first = (t.split("\n").map((l) => l.trim()).find(Boolean) ?? "").match(/[^.!?]+[.!?]*/g)?.slice(0, 2).join("").trim() ?? "";
+    if (first) return "💡 " + esc(first).slice(0, 400);
   } catch (e) { console.error(e); }
   return plain;
 }
@@ -1080,7 +1101,12 @@ const text_ = (v: unknown) => String(v ?? "").trim();
 // (\w does not match Cyrillic, so word endings are spelled [а-яё]*)
 const COACH_RE = /похудеть|похудени|похудан|сбросить\s+(вес|\d)|скинуть\s+(вес|\d|кил)|набрать\s+(вес|масс)|правильн[а-яё]*\s+питани|(подбери|подобрать|помоги|помогите)[а-яё]*\s+(мне\s+)?(с\s+)?питани|диет/i;
 const MENU_RE = /(меню|рацион)\s+на\s+(неделю|7|семь)|состав[а-яё]*\s+(мне\s+)?(меню|рацион)|обнов[а-яё]*\s+меню/i;
+// a sum said in digits or in words («сорок тысяч», «полтора миллиона»)
+const HAS_SUM = /\d|тысяч|тыщ|миллион|лям|сот|сто(?![а-яё])|двест|трист/i;
 function quickIntent(input: string, c: Ctx): Rec | null {
+  // a question about today's or yesterday's spending, with no sum in it: the list of that day
+  if (!HAS_SUM.test(input) && /покажи|сколько|какие|список|все|\?/i.test(input) && /расход|потрат|трат/i.test(input) && /сегодня|вчера/i.test(input))
+    return normalize({ records: [{ kind: "report", section: "expenses", date: /вчера/i.test(input) ? addDays(today(), -1) : today() }] }).records[0];
   const kind = MENU_RE.test(input) ? "meal_plan" : COACH_RE.test(input) ? (c.profile.kcal && /меню|рацион/i.test(input) ? "meal_plan" : "coach") : "";
   return kind ? normalize({ records: [{ kind }] }).records[0] : null;
 }
@@ -1342,6 +1368,7 @@ async function handle(u: any) {
 
     // later: long extras (the shopping list) that go out as their own messages
     const done: string[] = [], answers: string[] = [], undo: string[] = [], later: string[] = [], spent: string[] = [];
+    let repeats = 0;
     for (const r of records) {
       if (r.kind === "report") { answers.push(await report(r, c)); continue; }
       if (r.kind === "ask") { await tg("sendChatAction", { chat_id: chat, action: "typing" }); answers.push(await ask(r.text || input, c, history)); continue; }
@@ -1360,6 +1387,12 @@ async function handle(u: any) {
         if (row) undo.push(row.id);
         continue;
       }
+      // the AI sometimes re-reads the expenses it was shown: one that is already recorded is not added again
+      // unless the message itself names a sum
+      if (r.kind === "expense" && !HAS_SUM.test(input)) {
+        const day = isDate(r.date) ? r.date : today(), vnd = Math.round(r.amount * await vndRate(r.currency, c));
+        if (c.expenses.some((e) => e.date === day && String(e.note ?? "") === r.title && Math.abs((+e.amount || 0) - vnd) <= 1)) { repeats++; continue; }
+      }
       const d = await apply(r, c);
       if (!d.line) continue;
       done.push(d.line);
@@ -1369,6 +1402,7 @@ async function handle(u: any) {
         if (row) undo.push(row.id);
       }
     }
+    if (repeats && !done.length && !answers.length) answers.push("Эти траты уже записаны, повторно не добавлял.\n\n" + dayList(c, today()));
     // every recorded expense gets a short tip, after what was recorded
     if (spent.length) { await tg("sendChatAction", { chat_id: chat, action: "typing" }); const t = await expenseTip(spent, c); if (t) answers.unshift(t); }
     // cancel buttons older than a month are not needed any more
