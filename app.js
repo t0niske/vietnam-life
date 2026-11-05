@@ -631,6 +631,7 @@ function settingsPage(){
   <label class="field">Бюджет на месяц, ₫<input name="budget" id="s-budget" type="number" value="${esc(s.budget)}" ${s.budgetAuto?'disabled':''}></label>
   <label class="field">Откладывать на подушку, %<input name="savePct" id="s-save" type="number" min="0" max="90" value="${esc(s.savePct||0)}"></label>
   <label class="field">Цена кВт·ч, ₫<input name="kwhPrice" id="s-kwh" type="number" value="${esc(s.kwhPrice)}"></label>
+  <label class="field full">Как бот с вами общается<select name="tone" id="s-tone"><option value="friend" ${s.tone!=='polite'?'selected':''}>Как лучший друг: с матом и подколами</option><option value="polite" ${s.tone==='polite'?'selected':''}>Вежливо, без мата</option></select></label>
   ${S.accounts.length?`<label class="field full">Оплата «с карты» в боте: сумма в донгах, списывается со счёта<select name="cardAcc" id="s-card">${S.accounts.map(a=>`<option value="${a.id}" ${a.id===(s.cardAcc||(S.accounts.find(x=>x.cur==='KZT')||{}).id)?'selected':''}>${esc(a.name)} · ${(CUR[a.cur]||CUR.VND)[0]}</option>`).join('')}</select></label>`:''}
   <label class="field full" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" name="budgetAuto" id="s-auto" ${s.budgetAuto?'checked':''}>Бюджет автоматически: по деньгам на счетах, а когда наберутся доходы за 2–3 месяца — по среднему доходу</label>
   <label class="field full">Девиз под приветствием<input name="quote" id="s-quote" value="${esc(s.quote)}"></label>

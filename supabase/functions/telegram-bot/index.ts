@@ -18,7 +18,8 @@ const USEFUL: Record<string, string> = { sim: "Сим-карты", transport: "�
 const SETTINGS: Record<string, string> = { name: "имя для приветствия", city: "город", temp: "температура, °C", feels: "ощущается как, °C", budget: "бюджет на месяц, ₫", kwhPrice: "цена кВт·ч, ₫", quote: "девиз под приветствием",
   savePct: "процент на подушку безопасности (0–90)", budgetAuto: "бюджет автоматически по деньгам на счетах и доходам (да/нет)",
   weightGoal: "желаемый вес, кг", notifyMorning: "время утренней сводки (HH:MM или off)", notifyRemind: "время напоминания записать расходы (HH:MM или off)",
-  notifyReport: "время вечернего отчёта (HH:MM или off)", notifyMonthly: "время отчёта за месяц 1-го числа (HH:MM или off)" };
+  notifyReport: "время вечернего отчёта (HH:MM или off)", notifyMonthly: "время отчёта за месяц 1-го числа (HH:MM или off)",
+  tone: "стиль общения бота: friend — по-дружески, с матом и подколами; polite — вежливо, без мата" };
 const NUM_SETTINGS = ["temp", "feels", "budget", "kwhPrice", "weightGoal", "savePct"];
 // when the scheduled messages go out, unless changed in the settings
 const NOTIFY: Record<string, string> = { notifyMorning: "08:00", notifyRemind: "20:00", notifyReport: "21:30", notifyMonthly: "10:00" };
@@ -764,10 +765,12 @@ async function apply(r: Rec, c: Ctx): Promise<Done> {
       if (!SETTINGS[r.key]) return { line: "❓ Такой настройки нет", ops: [] };
       const value = NUM_SETTINGS.includes(r.key) ? amount(r.value.replace(/[^\d.,]/g, "")) || r.amount
         : NOTIFY[r.key] ? (/off|выкл|нет/i.test(r.value) ? "off" : hhmm(r.value) || NOTIFY[r.key])
-        : r.key === "budgetAuto" ? !/нет|выкл|off|false|0/i.test(r.value) : r.value;
+        : r.key === "budgetAuto" ? !/нет|выкл|off|false|0/i.test(r.value)
+        : r.key === "tone" ? (/вежл|без мат|культур|норм|polite/i.test(r.value) ? "polite" : "friend") : r.value;
       const ops = [await setKey("settings", r.key, value)];
       // a budget said as a sum is a fixed one
       if (r.key === "budget" && c.settings.budgetAuto) ops.push(await setKey("settings", "budgetAuto", false));
+      if (r.key === "tone") return { line: value === "polite" ? "⚙️ Понял, дальше вежливо и без мата." : "⚙️ Всё, бля, теперь по-дружески 😎", ops };
       return { line: `⚙️ ${cap(SETTINGS[r.key])}: ${esc(typeof value === "number" ? num(value) : value === true ? "да" : value === false ? "нет" : value)}`, ops };
     }
   }
@@ -987,14 +990,20 @@ async function ask(question: string, c: Ctx, history: Msg[] = []): Promise<strin
     return t ? "💬 " + t : "Не получилось ответить, спросите, пожалуйста, иначе.";
   };
   // Claude reasons over the data at high effort and may look things up on the web; Groq answers from the data alone
-  return fmt(await aiCall([{ role: "system", content: ASK_SYSTEM + "\n\nДанные:\n" + data }, ...history.slice(-12), { role: "user", content: question }],
+  return fmt(await aiCall([{ role: "system", content: ASK_SYSTEM + "\n" + toneText(c) + "\n\nДанные:\n" + data }, ...history.slice(-12), { role: "user", content: question }],
     { maxTokens: 2000, temperature: 0.4, effort: "high", web: true }));
 }
 
+/* ---------- how the bot talks: a best friend with mat and teasing, or polite (settings.tone) ---------- */
+const TONE_FRIEND = `Стиль: ты их лучший друг, а не вежливый ассистент. На «ты», живым разговорным языком, с матом и подъёбками («бля», «ну ёпт», «заебал», «охренеть»), угарно и коротко. Подкалывай за лишние и повторяющиеся траты и прямо говори, чем это кончится («бля, опять кофе, так и до 20-го бабки не дотянут»), но по-доброму: ты на их стороне и хочешь, чтобы деньги не кончились. Не повторяй одни и те же шутки и обороты. Настоящих оскорблений нет: не про внешность, пол, национальность, здоровье. Цифры и даты называй точно — шутка не повод врать.`;
+const TONE_POLITE = `Стиль: дружелюбно и вежливо, на «вы», без мата.`;
+const toneText = (c: Ctx) => (c.settings.tone === "polite" ? TONE_POLITE : TONE_FRIEND);
+
 /* ---------- a tip after every recorded expense ---------- */
-const TIP_SYSTEM = `Ты финансовый помощник семьи, которая живёт во Вьетнаме (Нячанг). После каждой новой траты давай один короткий практичный совет: 1–2 предложения, не длиннее 220 символов.
+const TIP_SYSTEM = `Ты финансовый помощник семьи, которая живёт во Вьетнаме (Нячанг). После каждой новой траты давай один короткий комментарий с практичным советом: 1–3 предложения, не длиннее 300 символов.
+Если эту же штуку берут часто (в данных есть, сколько раз за неделю), отметь это и скажи, во что привычка выльется за месяц. Если при текущем темпе деньги кончатся раньше конца месяца, назови дату.
 Опирайся на цифры ниже: темп трат, остаток бюджета на день, сравнение категории с прошлым месяцем. Если трата разумная и в бюджет укладывается, скажи это одной фразой и подскажи, как во Вьетнаме тратить на такое меньше (рынки вместо супермаркетов, Grab Bike вместо такси, местная еда, торг и т. п.). Если тратят быстрее, чем позволяет бюджет, предупреди и назови сумму на день.
-Даже если трат несколько, дай один общий совет на всё сообщение, одним абзацем. Не морализируй, не повторяй сумму самой траты, без приветствий, эмодзи и markdown. Суммы пиши с пробелами между разрядами и знаком ₫.`;
+Даже если трат несколько, дай один общий комментарий на всё сообщение, одним абзацем. Не читай нотаций, не повторяй сумму самой траты, без приветствий, эмодзи и markdown. Суммы пиши с пробелами между разрядами и знаком ₫.`;
 // one short tip from the AI with this month's numbers; without the AI, or when it is busy, a plain line about what is left per day
 async function expenseTip(ids: string[], c: Ctx): Promise<string> {
   const all = await items("expenses");
@@ -1014,14 +1023,19 @@ async function expenseTip(ids: string[], c: Ctx): Promise<string> {
     `Сегодня ${day}, до конца месяца ${daysLeft} дн. (включая сегодня)`,
     `Бюджет на траты в этом месяце ${c.budget} ₫, уже потрачено ${now.total} ₫, ` + (left >= 0 ? `осталось ${left} ₫ — это ${Math.round(left / daysLeft)} ₫ в день` : `бюджет превышен на ${-left} ₫`),
     ...[...new Set(added.map((e) => String(e.cat)))].map((k) => `${k}: в этом месяце ${catOf(now, k)} ₫, за те же дни прошлого месяца ${catOf(before, k)} ₫`),
+    ...[...new Set(added.map((e) => low(e.note)).filter(Boolean))].map((n) => {
+      const week = all.filter((e) => low(e.note) === n && e.date > addDays(day, -7) && e.date <= day);
+      const sum = sumOf(week, "amount");
+      return week.length > 1 ? `«${n}» за последние 7 дней: ${week.length} раз, ${Math.round(sum)} ₫; если так каждый день — ≈ ${Math.round(sum / 7 * 30)} ₫ в месяц` : "";
+    }),
     c.savePct ? `На подушку безопасности откладывают ${c.savePct}% (уже вычтено из бюджета)` : "",
     plain(await forecast({ ...c, expenses: all })),
   ].filter(Boolean).join("\n");
   try {
-    const t = (await aiCall([{ role: "system", content: TIP_SYSTEM }, { role: "user", content: facts }], { maxTokens: 900, temperature: 0.6, noWait: true, effort: "low" }))
+    const t = (await aiCall([{ role: "system", content: TIP_SYSTEM + "\n" + toneText(c) }, { role: "user", content: facts }], { maxTokens: 900, temperature: 0.6, noWait: true, effort: "low" }))
       .replace(/\*\*|^#+\s*/gm, "").trim();
-    // the free models sometimes repeat the tip for every expense: only the first paragraph, at most two sentences
-    const first = (t.split("\n").map((l) => l.trim()).find(Boolean) ?? "").match(/[^.!?]+[.!?]*/g)?.slice(0, 2).join("").trim() ?? "";
+    // the free models sometimes repeat the tip for every expense: only the first paragraph, at most three sentences
+    const first = (t.split("\n").map((l) => l.trim()).find(Boolean) ?? "").match(/[^.!?]+[.!?]*/g)?.slice(0, 3).join("").trim() ?? "";
     if (first) return "💡 " + esc(first).slice(0, 400);
   } catch (e) { console.error(e); }
   return simple;
@@ -1153,7 +1167,7 @@ async function coachTurn(chat: number, text: string, c: Ctx, st: Item | null): P
   }
   const w = lastWeight(c);
   const history: Msg[] = (st?.history ?? []).slice(-14);
-  const out = await aiJSON([{ role: "system", content: COACH_PROMPT(c.profile, w) }, ...history, { role: "user", content: text }], 1500);
+  const out = await aiJSON([{ role: "system", content: COACH_PROMPT(c.profile, w) + "\n" + toneText(c) }, ...history, { role: "user", content: text }], 1500);
   const profile: Item = { ...c.profile };
   for (const k of PROFILE_KEYS) if (out.profile?.[k] != null && out.profile[k] !== "") profile[k] = out.profile[k];
   if (w) profile.weight_kg = w;
