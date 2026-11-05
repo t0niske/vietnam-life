@@ -36,11 +36,13 @@ const NAME: Record<string, (x: any) => string> = {
   goals: (x) => x.title, trips: (x) => x.city, health: (x) => x.title, apartments: (x) => x.name, weights: (x) => x.date,
 };
 
+// a missing secret is not remembered, so a key added to the Vault later is picked up without a redeploy
 const secrets = new Map<string, string>();
 async function secret(name: string): Promise<string> {
   if (!secrets.has(name)) {
     const { data } = await db.rpc("vl_secret", { p_name: name });
-    secrets.set(name, data ?? "");
+    if (!data) return "";
+    secrets.set(name, data);
   }
   return secrets.get(name)!;
 }
@@ -264,7 +266,54 @@ function balances(c: Ctx): { acc: Item; bal: number }[] {
   });
 }
 
-/* ---------- text -> actions: Groq free tier, or Claude if an Anthropic key is set instead ---------- */
+/* ---------- the AI: Claude when an Anthropic key is in the Vault, the free Groq models without it or when Claude fails ---------- */
+const CLAUDE_MODEL = "claude-opus-5-5";
+let claudeClient: Anthropic | null = null;
+async function claude(): Promise<Anthropic | null> {
+  const key = await secret("anthropic_api_key");
+  if (!key) return null;
+  return claudeClient ??= new Anthropic({ apiKey: key });
+}
+// one request to Claude: system messages go to the system prompt, the rest must start with the user;
+// a safety decline is re-run on another model by the API itself (fallbacks), web search answers can take several rounds (pause_turn)
+async function claudeCall(cl: Anthropic, messages: Msg[], opt: { maxTokens?: number; effort?: string; schema?: unknown; web?: boolean }): Promise<string> {
+  const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
+  const turns: any[] = messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role, content: m.content }));
+  while (turns.length && turns[0].role !== "user") turns.shift();
+  for (let round = 0; round < 4; round++) {
+    const res: any = await cl.beta.messages.create({
+      model: CLAUDE_MODEL, max_tokens: opt.maxTokens ?? 16000, system, messages: turns,
+      betas: ["server-side-fallback-2026-07-01"], fallbacks: "default",
+      output_config: { effort: opt.effort ?? "medium", ...(opt.schema ? { format: { type: "json_schema", schema: opt.schema } } : {}) },
+      ...(opt.web ? { tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 3, user_location: { type: "approximate", city: "Nha Trang", country: "VN", timezone: "Asia/Ho_Chi_Minh" } }] } : {}),
+    } as any);
+    if (res.stop_reason === "pause_turn") { turns.push({ role: "assistant", content: res.content }); continue; }
+    if (res.stop_reason === "refusal") throw new Error("CLAUDE_REFUSAL");
+    return res.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("").trim();
+  }
+  throw new Error("Claude: too many rounds");
+}
+// Claude first; on any of its errors (no money on the account, overload) the free Groq models answer instead, if their key is there
+async function aiCall(messages: Msg[], opt: { json?: boolean; maxTokens?: number; temperature?: number; noWait?: boolean; effort?: string; web?: boolean } = {}): Promise<string> {
+  const cl = await claude();
+  if (cl) {
+    try {
+      const out = await claudeCall(cl, opt.json ? [...messages, { role: "system", content: "Ответь только JSON-объектом, без пояснений и без ```." }] : messages,
+        { maxTokens: opt.json ? 16000 : Math.max(4000, (opt.maxTokens ?? 3000) * 3), effort: opt.effort ?? (opt.json ? "low" : "medium"), web: opt.web });
+      if (!opt.json) return out;
+      const j = out.replace(/^```(?:json)?\s*|\s*```$/g, "");
+      JSON.parse(j);
+      return j;
+    } catch (e) {
+      console.error(e);
+      if (!(await secret("groq_api_key"))) throw e;
+    }
+  }
+  return groqCall(messages, opt);
+}
+const aiJSON = async (messages: Msg[], maxTokens = 4000): Promise<Item> => JSON.parse(await aiCall(messages, { json: true, maxTokens, temperature: 0.4 }));
+
+/* ---------- text -> actions ---------- */
 const KINDS = ["expense", "income", "exchange", "balance", "rate", "event", "note", "health", "utility", "apartment", "trip", "trip_item", "meal",
   "goal", "goal_add", "deposit_back", "weight", "activity", "coach", "meal_plan", "recipe", "shopping", "send", "done", "reschedule", "delete", "useful", "setting", "report", "ask"];
 const SECTIONS = ["expenses", "incomes", "transfers", "events", "notes", "goals", "trips", "health", "apartments", "weights"];
@@ -433,26 +482,22 @@ function normalize(o: any): { records: Rec[]; question: string } {
 const FORMAT = `Ответь только JSON: {"records":[{"kind":"…", и только нужные этому виду поля из: date, date_to, title, text, city, amount, currency, amount_to, currency_to, fee, fee_currency, account, account_to, deposit, category, event_type, time_from, time_to, health_kind, month, util_kind, kwh, rooms, area, weekday, meal, kcal, key, value, section, flag, minutes, met, to}], "question":""}`;
 
 async function extract(input: string, c: Ctx, history: Msg[] = []): Promise<{ records: Rec[]; question: string }> {
-  // free path: Groq, with the last turns of the conversation so that follow-ups make sense
-  if (await secret("groq_api_key")) {
-    const out = await groqJSON([{ role: "system", content: prompt(c) + "\n\n" + FORMAT }, ...history.slice(-8), { role: "user", content: input }], 2500);
-    return normalize(out);
+  // Claude: the exact schema, with the last turns of the conversation so that follow-ups make sense
+  const cl = await claude();
+  if (cl) {
+    try {
+      const out = await claudeCall(cl, [{ role: "system", content: prompt(c) }, ...history.slice(-8), { role: "user", content: input }], { maxTokens: 16000, effort: "low", schema: RECORD_SCHEMA });
+      return normalize(JSON.parse(out || "{}"));
+    } catch (e) {
+      console.error(e);
+      if (String((e as Error).message) === "CLAUDE_REFUSAL") return { records: [], question: "Не получилось разобрать сообщение, переформулируйте, пожалуйста." };
+      if (!(await secret("groq_api_key"))) throw e;
+    }
   }
-
-  // paid alternative: Claude with structured output, used only if an Anthropic key is added instead
-  const key = await secret("anthropic_api_key");
-  if (!key) throw new Error("NO_AI_KEY");
-  const client = new Anthropic({ apiKey: key });
-  const res = await client.messages.create({
-    model: "claude-opus-5-5",
-    max_tokens: 8000,
-    output_config: { effort: "low", format: { type: "json_schema", schema: RECORD_SCHEMA } },
-    system: prompt(c),
-    messages: [{ role: "user", content: input }],
-  } as any);
-  if (res.stop_reason === "refusal") return { records: [], question: "Не получилось разобрать сообщение, переформулируйте, пожалуйста." };
-  const block = res.content.find((b) => b.type === "text");
-  return normalize(JSON.parse(block && block.type === "text" ? block.text : "{}"));
+  // the free path: Groq with the short format
+  if (!(await secret("groq_api_key"))) throw new Error("NO_AI_KEY");
+  const out = JSON.parse(await groqCall([{ role: "system", content: prompt(c) + "\n\n" + FORMAT }, ...history.slice(-8), { role: "user", content: input }], { json: true, maxTokens: 2500, temperature: 0.4 }));
+  return normalize(out);
 }
 
 /* ---------- apply one action ---------- */
@@ -747,7 +792,7 @@ async function report(r: Rec, c: Ctx): Promise<string> {
     const open = c.notes.filter((n) => !n.done);
     return open.length ? "📝 Надо сделать:\n" + open.map((n) => `• ${esc(n.text)}`).join("\n") : "Все заметки закрыты 🎉";
   }
-  if (r.section === "expenses" && isDate(r.date)) return dayList(c, r.date);
+  if (r.section === "expenses" && isDate(r.date)) return await dayList(c, r.date);
   const exp = c.expenses.filter((e) => String(e.date).startsWith(m));
   const spent = sumOf(exp, "amount");
   if (r.section === "money") {
@@ -773,14 +818,36 @@ function leftText(c: Ctx, day: string): string {
   const left = c.budget - sumOf(c.expenses.filter((e) => String(e.date).startsWith(day.slice(0, 7))), "amount"), n = daysLeftFrom(today());
   return left >= 0 ? `До конца месяца на траты осталось ${money(left)}: примерно ${money(left / n)} в день` : `Бюджет месяца превышен на ${money(-left)}`;
 }
+// where the money is heading: what is on all accounts now, and the everyday pace (without rent and trips)
+// of the last 7 days carried on to the month's end; incomes still to come are not counted
+const ONE_OFF = ["Аренда", "Путешествия"];
+async function forecast(c: Ctx, day = today()): Promise<string> {
+  if (!c.accounts.length) return "";
+  let now = 0;
+  for (const { acc, bal } of balances(c)) now += bal * (await vndRate(acc.cur, c));
+  if (now <= 0) return "💰 На счетах денег не осталось.";
+  // the pace window: the 7 days before today, fewer when the records are younger; only today when there is nothing earlier
+  const first = c.expenses.reduce((m, e) => (e.date && e.date < m ? e.date : m), day);
+  const from = first > addDays(day, -7) ? first : addDays(day, -7);
+  const to = from === day ? addDays(day, 1) : day, n = Math.max(1, Math.round((Date.parse(to) - Date.parse(from)) / 864e5));
+  const pace = sumOf(c.expenses.filter((e) => e.date >= from && e.date < to && !ONE_OFF.includes(e.cat)), "amount") / n;
+  let out = `💰 На всех счетах сейчас ≈ ${money(now)}`;
+  if (!pace) return out;
+  const rest = daysLeftFrom(day) - 1, end = now - pace * rest;
+  out += `. Обычные траты (без аренды и поездок) ≈ ${money(pace)} в день: `;
+  out += end >= 0 ? `при таком темпе к концу месяца останется ≈ ${money(end)}` : `при таком темпе деньги закончатся примерно ${dshort(addDays(day, Math.floor(now / pace)))}`;
+  if (end < now * 0.1) out += `. Чтобы хватило до конца месяца, не больше ≈ ${money(now / daysLeftFrom(day))} в день`;
+  return out + " (новые доходы не учтены)";
+}
 // one day's expenses one by one («покажи все расходы за сегодня»)
-function dayList(c: Ctx, day: string): string {
+async function dayList(c: Ctx, day: string): Promise<string> {
   const list = c.expenses.filter((e) => e.date === day);
   if (!list.length) return `За ${dshort(day)} расходов не записано.`;
   const accName = (id: string) => c.accounts.find((a) => a.id === id)?.name;
   const rows = list.map((e) => `\n• ${money(+e.amount || 0)}${e.cur && e.cur !== "VND" ? ` (${cash(+e.orig || 0, e.cur)})` : ""} · ${esc(e.cat)}${e.note ? " · " + esc(e.note) : ""}${accName(e.acc) ? " · " + esc(accName(e.acc)) : ""}`).join("");
   const left = leftText(c, day);
-  return `💸 Расходы за ${dshort(day)}: <b>${money(sumOf(list, "amount"))}</b>${rows}${left ? "\n\n" + left : ""}`;
+  const fc = day === today() ? await forecast(c) : "";
+  return `💸 Расходы за ${dshort(day)}: <b>${money(sumOf(list, "amount"))}</b>${rows}${left ? "\n\n" + left : ""}${fc ? "\n" + fc : ""}`;
 }
 // where the budget comes from and how much of it goes to the cushion, e.g. " (деньги на счетах, 20% — 9 000 000 ₫ на подушку)"
 const budgetNote = (c: Ctx) => {
@@ -884,6 +951,8 @@ async function digest(c: Ctx): Promise<string> {
   return `Сегодня ${day} (${DAYS_FULL[todayIdx()]}). Бюджет на траты в этом месяце ${c.budget} ₫${budgetNote(c)}; всего ${c.budgetGross} ₫; на подушку безопасности откладывают ${c.savePct}%. Курсы: 1 $ = ${c.usd} ₫${Object.entries(c.rates).filter(([k]) => k !== "USD").map(([k, v]) => `, 1 ${k} = ${v} ₫`).join("")}.
 Расходы и доходы по месяцам (₫):
 ${byMonth.join("\n")}
+Прогноз до конца месяца (посчитан кодом): ${plain(await forecast(c)) || "нет счетов"}
+Траты этого месяца по дням (₫): ${[...new Set(cur.map((e) => e.date))].map((d) => `${d}: ${Math.round(sumOf(cur.filter((e) => e.date === d), "amount"))}`).join("; ") || "нет"}
 Все расходы этого месяца (дата, сумма ₫, категория, описание):
 ${lines(cur.map((e) => `${e.date} ${e.amount} ${e.cat} ${e.note || ""}`))}
 Доходы за последние месяцы:
@@ -904,9 +973,11 @@ ${lines(ev.map((e) => `${e.date}${e.from ? " " + e.from : ""} ${e.title}${e.done
 
 const ASK_SYSTEM = `Ты личный ИИ-помощник пары, которая живёт во Вьетнаме (Нячанг), и разговариваешь с ними в Telegram. У тебя есть все данные из их планера: деньги, счета, планы, питание, вес, тренировки. Ты помнишь разговор и отвечаешь на любые вопросы и просьбы: о деньгах, планах, здоровье, еде, жизни во Вьетнаме, просто поговорить.
 Отвечай по-русски, по делу и дружелюбно, как толковый друг-финансист: сначала прямой ответ, потом 2–5 коротких пунктов с цифрами и, если уместно, один конкретный совет.
+Главная забота пары — чтобы деньги не закончились до конца месяца. В вопросах о деньгах делай настоящий анализ: темп трат по дням, на что уходит больше всего и как это сравнить с прошлым, хватит ли денег до конца месяца (прогноз в данных уже посчитан — опирайся на него), сколько можно тратить в день и что конкретно урезать. Делай выводы, а не пересказ цифр.
+Если вопрос про актуальные вещи (цены, курсы, правила, места, новости), можешь поискать в интернете и коротко сказать, откуда сведения.
 Считай аккуратно, опирайся только на данные ниже; если данных не хватает — скажи, чего именно, и что записать, чтобы ответ стал точнее. Не выдумывай записи.
 На общие вопросы о жизни во Вьетнаме (визы, банки, транспорт, медицина) отвечай из своих знаний и предупреждай, если правила могли измениться.
-Суммы пиши с пробелами между разрядами и знаком валюты (12 500 000 ₫). Не используй таблицы и заголовки; для выделения — только **жирный**. Не длиннее 15 строк.`;
+Суммы пиши с пробелами между разрядами и знаком валюты (12 500 000 ₫). Не используй таблицы и заголовки; для выделения — только **жирный**. Не длиннее 20 строк.`;
 
 async function ask(question: string, c: Ctx, history: Msg[] = []): Promise<string> {
   const data = await digest(c) + `\nПодключены к боту: ${c.people.map((p) => p.name + (p.chat_id === c.me ? " (пишет сейчас)" : "")).join(", ")}`;
@@ -915,17 +986,9 @@ async function ask(question: string, c: Ctx, history: Msg[] = []): Promise<strin
     const t = esc(s.trim()).replace(/^#+\s*/gm, "").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").slice(0, 3800);
     return t ? "💬 " + t : "Не получилось ответить, спросите, пожалуйста, иначе.";
   };
-  if (await secret("groq_api_key")) {
-    return fmt(await groqCall([{ role: "system", content: ASK_SYSTEM + "\n\nДанные:\n" + data }, ...history.slice(-10), { role: "user", content: question }], { maxTokens: 2000, temperature: 0.4 }));
-  }
-  const key = await secret("anthropic_api_key");
-  if (!key) throw new Error("NO_AI_KEY");
-  const res = await new Anthropic({ apiKey: key }).messages.create({
-    model: "claude-opus-5-5", max_tokens: 2000, system: ASK_SYSTEM + "\n\nДанные:\n" + data,
-    messages: [{ role: "user", content: question }],
-  } as any);
-  const block = res.content.find((b) => b.type === "text");
-  return fmt(block && block.type === "text" ? block.text : "");
+  // Claude reasons over the data at high effort and may look things up on the web; Groq answers from the data alone
+  return fmt(await aiCall([{ role: "system", content: ASK_SYSTEM + "\n\nДанные:\n" + data }, ...history.slice(-12), { role: "user", content: question }],
+    { maxTokens: 2000, temperature: 0.4, effort: "high", web: true }));
 }
 
 /* ---------- a tip after every recorded expense ---------- */
@@ -942,7 +1005,7 @@ async function expenseTip(ids: string[], c: Ctx): Promise<string> {
   const before = spentIn({ ...c, expenses: all }, pm + "-01", pm + day.slice(7));
   const daysLeft = daysLeftFrom(day);
   const left = c.budget - now.total;
-  const plain = left >= 0
+  const simple = left >= 0
     ? `💡 ${leftText({ ...c, expenses: all }, day)}`
     : `💡 Бюджет месяца уже превышен на ${money(-left)}: необязательные траты лучше отложить до следующего месяца`;
   const catOf = (x: { cats: [string, number][] }, k: string) => x.cats.find(([n]) => n === k)?.[1] ?? 0;
@@ -952,20 +1015,21 @@ async function expenseTip(ids: string[], c: Ctx): Promise<string> {
     `Бюджет на траты в этом месяце ${c.budget} ₫, уже потрачено ${now.total} ₫, ` + (left >= 0 ? `осталось ${left} ₫ — это ${Math.round(left / daysLeft)} ₫ в день` : `бюджет превышен на ${-left} ₫`),
     ...[...new Set(added.map((e) => String(e.cat)))].map((k) => `${k}: в этом месяце ${catOf(now, k)} ₫, за те же дни прошлого месяца ${catOf(before, k)} ₫`),
     c.savePct ? `На подушку безопасности откладывают ${c.savePct}% (уже вычтено из бюджета)` : "",
+    plain(await forecast({ ...c, expenses: all })),
   ].filter(Boolean).join("\n");
   try {
-    const t = (await groqCall([{ role: "system", content: TIP_SYSTEM }, { role: "user", content: facts }], { maxTokens: 900, temperature: 0.6, noWait: true }))
+    const t = (await aiCall([{ role: "system", content: TIP_SYSTEM }, { role: "user", content: facts }], { maxTokens: 900, temperature: 0.6, noWait: true, effort: "low" }))
       .replace(/\*\*|^#+\s*/gm, "").trim();
     // the free models sometimes repeat the tip for every expense: only the first paragraph, at most two sentences
     const first = (t.split("\n").map((l) => l.trim()).find(Boolean) ?? "").match(/[^.!?]+[.!?]*/g)?.slice(0, 2).join("").trim() ?? "";
     if (first) return "💡 " + esc(first).slice(0, 400);
   } catch (e) { console.error(e); }
-  return plain;
+  return simple;
 }
 
 /* ---------- nutrition coach: interview, daily norm, weekly menu, shopping list, recipes ---------- */
 type Msg = { role: string; content: string };
-// one answer from Groq. Each model has its own free per-minute quota, so on a rate limit or an error the next one is tried;
+// one answer from Groq (the free fallback). Each model has its own free per-minute quota, so on a rate limit or an error the next one is tried;
 // when all of them are busy the bot waits the few seconds Groq asks for and goes round once more
 async function groqCall(messages: Msg[], opt: { json?: boolean; maxTokens?: number; temperature?: number; noWait?: boolean } = {}): Promise<string> {
   const key = await secret("groq_api_key");
@@ -1002,7 +1066,6 @@ async function groqCall(messages: Msg[], opt: { json?: boolean; maxTokens?: numb
   }
   throw new Error("Groq: " + last);
 }
-const groqJSON = async (messages: Msg[], maxTokens = 4000): Promise<Item> => JSON.parse(await groqCall(messages, { json: true, maxTokens, temperature: 0.4 }));
 
 // one row per chat: the last turns of the conversation (convo) and, during the nutrition interview, its own history
 async function chatState(chat: number): Promise<Item | null> {
@@ -1090,7 +1153,7 @@ async function coachTurn(chat: number, text: string, c: Ctx, st: Item | null): P
   }
   const w = lastWeight(c);
   const history: Msg[] = (st?.history ?? []).slice(-14);
-  const out = await groqJSON([{ role: "system", content: COACH_PROMPT(c.profile, w) }, ...history, { role: "user", content: text }], 1500);
+  const out = await aiJSON([{ role: "system", content: COACH_PROMPT(c.profile, w) }, ...history, { role: "user", content: text }], 1500);
   const profile: Item = { ...c.profile };
   for (const k of PROFILE_KEYS) if (out.profile?.[k] != null && out.profile[k] !== "") profile[k] = out.profile[k];
   if (w) profile.weight_kg = w;
@@ -1132,7 +1195,7 @@ async function mealPlan(c: Ctx): Promise<{ text: string; list: string; ops: Op[]
   const p = c.profile;
   if (!p.kcal) throw new Error("NO_PROFILE");
   const base = `Человек живёт в Нячанге (Вьетнам). Продукты — те, что легко купить на местном рынке и в супермаркетах (Lotte Mart, WinMart, Co.op): рыба, морепродукты, курица, свинина, говядина, яйца, тофу, рис, рисовая лапша, овсянка, овощи, тропические фрукты, зелень. Данные: ${profileText(p)}.`;
-  const menu = await groqJSON([{ role: "system", content: `Ты нутрициолог. ${base}
+  const menu = await aiJSON([{ role: "system", content: `Ты нутрициолог. ${base}
 Составь меню на 7 дней (Пн–Вс), 4 приёма пищи: Завтрак, Обед, Ужин, Перекус (если приёмов меньше — Перекус пустой). Калорийность дня ≈ норме (±5%), белка — не меньше нормы.
 Блюда простые и вкусные, местная кухня и привычная еда вперемешку. Повторяй блюда (готовка впрок): за неделю не больше 10 разных блюд.
 Ответь JSON: {"days":[{"day":"Пн","items":[{"meal":"Завтрак","name":"короткое название","desc":"порция в граммах","kcal":число,"protein":число}, ...]}, ... все 7 дней]}` }, { role: "user", content: "Составь меню на неделю." }], 7000);
@@ -1147,14 +1210,14 @@ async function mealPlan(c: Ctx): Promise<{ text: string; list: string; ops: Op[]
   const recipes: Item[] = [];
   for (let i = 0; i < dishes.length; i += 6) {
     const part = dishes.slice(i, i + 6);
-    const r = await groqJSON([{ role: "system", content: `Ты повар и нутрициолог. ${base}
+    const r = await aiJSON([{ role: "system", content: `Ты повар и нутрициолог. ${base}
 Для каждого блюда напиши рецепт на ${p.people || 1} чел. в этой калорийности: ингредиенты с граммовкой, понятные шаги, как приготовить правильно и полезно (меньше масла, как не пересушить и т. п.).
 Ответь JSON: {"recipes":[{"title":"как в списке","kcal":на порцию,"time_min":число,"ingredients":["200 г куриного филе", ...],"steps":["…", ...],"tip":"совет"}]}` },
       { role: "user", content: part.map((x) => `${x.name} (${x.desc}, ~${x.kcal} ккал)`).join("\n") }], 6000);
     for (const x of r.recipes ?? []) recipes.push({ id: uid(), title: text_(x.title), kcal: Math.round(Number(x.kcal) || 0), time: Math.round(Number(x.time_min) || 0),
       ingredients: (x.ingredients ?? []).map(text_).filter(Boolean), steps: (x.steps ?? []).map(text_).filter(Boolean), tip: text_(x.tip) });
   }
-  const shop = await groqJSON([{ role: "system", content: `Ты помогаешь с покупками. ${base}
+  const shop = await aiJSON([{ role: "system", content: `Ты помогаешь с покупками. ${base}
 По меню и рецептам на неделю составь один общий список покупок на ${p.people || 1} чел. Объединяй одинаковые продукты, указывай количество на всю неделю и примерную цену в донгах в Нячанге сейчас.
 Группы: Овощи и зелень, Фрукты, Мясо и рыба, Яйца и молочное, Крупы и бакалея, Другое.
 Ответь JSON: {"items":[{"name":"Куриное филе","qty":"1,2 кг","group":"Мясо и рыба","price_vnd":число}]}` },
@@ -1185,7 +1248,7 @@ async function recipeText(name: string, c: Ctx): Promise<string> {
   const found = pick(c.recipes, name, (x) => x.title);
   if (found) return recipeFormat(found);
   const p = c.profile;
-  const out = await groqJSON([{ role: "system", content: `Ты повар и нутрициолог. Человек живёт в Нячанге, продукты — с местного рынка и из супермаркетов. ${p.kcal ? "Данные: " + profileText(p) : ""}
+  const out = await aiJSON([{ role: "system", content: `Ты повар и нутрициолог. Человек живёт в Нячанге, продукты — с местного рынка и из супермаркетов. ${p.kcal ? "Данные: " + profileText(p) : ""}
 Напиши полезный рецепт. Ответь JSON: {"title":"…","kcal":на порцию,"time_min":число,"ingredients":["…"],"steps":["…"],"tip":"как приготовить правильно"}` }, { role: "user", content: name }], 2500);
   const r = { id: uid(), title: text_(out.title) || cap(name), kcal: Math.round(Number(out.kcal) || 0), time: Math.round(Number(out.time_min) || 0),
     ingredients: (out.ingredients ?? []).map(text_).filter(Boolean), steps: (out.steps ?? []).map(text_).filter(Boolean), tip: text_(out.tip) };
@@ -1239,7 +1302,7 @@ function evening(c: Ctx, day: string): string {
   return out + weighNudge(c, day);
 }
 
-function dayReport(c: Ctx, day: string): string {
+async function dayReport(c: Ctx, day: string): Promise<string> {
   const s = spentIn(c, day, day), m = day.slice(0, 7), mon = spentIn(c, m + "-01", day);
   const inc = sumOf(c.incomes.filter((i) => i.date === day), "vnd");
   const lastDay = +addDays(addDays(m + "-01", 40).slice(0, 7) + "-01", -1).slice(8), daysLeft = lastDay - +day.slice(8);
@@ -1250,6 +1313,8 @@ function dayReport(c: Ctx, day: string): string {
   const left = c.budget - mon.total;
   out += `\n\nЗа ${MONTHS[+m.slice(5) - 1]}: ${money(mon.total)} из ${money(c.budget)} на траты (${c.budget ? Math.round(mon.total / c.budget * 100) : 0}%)`;
   out += left >= 0 ? (daysLeft > 0 ? `, можно тратить ≈ ${money(left / daysLeft)} в день` : "") : `, перерасход ${money(-left)}`;
+  const fc = await forecast(c, day);
+  if (fc) out += `\n${fc}`;
   if (done) out += `\n✅ Сделано дел: ${done}`;
   const act = burnedOn(c, day), burned = sumOf(act, "kcal");
   if (burned) out += `\n🏃 ${act.map((a) => esc(a.title)).join(", ")} — ≈ ${num(burned)} ккал`;
@@ -1271,7 +1336,7 @@ async function tick(now = new Date()) {
   }
   if (at("notifyMorning") && await once(`morning:${p.date}`)) out.push(morning(c, p.date));
   if (at("notifyRemind") && await once(`remind:${p.date}`)) out.push(evening(c, p.date));
-  if (at("notifyReport") && await once(`daily:${p.date}`)) out.push(dayReport(c, p.date));
+  if (at("notifyReport") && await once(`daily:${p.date}`)) out.push(await dayReport(c, p.date));
   if (p.wd === 6 && at("notifyReport") && await once(`weekly:${p.date}`)) out.push(weekReport(c, p.date));
   if (p.day === 1 && at("notifyMonthly") && await once(`monthly:${p.date.slice(0, 7)}`)) out.push(await monthReport(c, prevMonth(p.date.slice(0, 7))));
   for (const l of links) for (const msg of out) await say(l.chat_id, msg);
@@ -1417,7 +1482,7 @@ async function handle(u: any) {
         if (row) undo.push(row.id);
       }
     }
-    if (repeats && !done.length && !answers.length) answers.push("Эти траты уже записаны, повторно не добавлял.\n\n" + dayList(c, today()));
+    if (repeats && !done.length && !answers.length) answers.push("Эти траты уже записаны, повторно не добавлял.\n\n" + await dayList(c, today()));
     // every recorded expense gets a short tip, after what was recorded
     if (spent.length) { await tg("sendChatAction", { chat_id: chat, action: "typing" }); const t = await expenseTip(spent, c); if (t) answers.unshift(t); }
     // cancel buttons older than a month are not needed any more
@@ -1428,8 +1493,9 @@ async function handle(u: any) {
     for (const x of later) await say(chat, x);
   } catch (e) {
     const err = String((e as Error).message);
-    if (err === "NO_STT_KEY" || err === "NO_AI_KEY") return say(chat, "Бот ещё не до конца настроен: нужен бесплатный ключ Groq. Как только он будет добавлен, я начну понимать голосовые и текст.");
+    if (err === "NO_STT_KEY" || err === "NO_AI_KEY") return say(chat, "Бот ещё не до конца настроен: нужен ключ ИИ (Anthropic или бесплатный Groq). Как только он будет добавлен, я начну понимать голосовые и текст.");
     console.error(e);
+    if (/credit balance/i.test(err)) return say(chat, "На счёте Anthropic закончились деньги, ИИ не ответил и ничего не записал. Пополните баланс в console.anthropic.com → Billing.");
     if (/rate limit|tokens per/i.test(err)) return say(chat, "Бесплатный ИИ сейчас перегружен, ничего не записал. Повторите, пожалуйста, через минуту.");
     return say(chat, "Что-то пошло не так, запись не сохранена. Попробуйте ещё раз.");
   }
