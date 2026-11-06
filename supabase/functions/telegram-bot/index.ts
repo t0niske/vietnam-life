@@ -390,7 +390,7 @@ ${lines(c.trips.map((t) => `- ${q(t.city)} ${t.from}…${t.to}; чек-лист:
 Квартиры:
 ${lines(c.apartments.map((a) => `- ${q(a.name)}, ${a.city}${a.current ? " (живут сейчас)" : ""}${depText(a)}`))}
 Последние расходы:
-${lines(exp.map((e) => `- ${e.date} ${e.amount} VND ${e.cat} ${q(e.note)}`))}
+${lines(exp.map((e) => `- ${e.date} ${e.amount} VND ${e.cat} ${q(e.note)}${e.cur && e.cur !== "VND" ? ` (${e.orig} ${e.cur})` : ""}${c.accounts.find((a) => a.id === e.acc) ? ", счёт " + q(c.accounts.find((a) => a.id === e.acc)!.name) : ""}`))}
 Последние взвешивания:
 ${lines(c.weights.slice(-5).map((w) => `- ${w.date} ${w.kg} кг`))}
 Список покупок: ${lines(c.shopping.map((i) => `- ${q(i.name)}${i.done ? " (куплено)" : ""}`))}
@@ -406,7 +406,7 @@ const prompt = (c: Ctx) => `Ты помощник пары, которая жи�
 
 Виды действий (kind) и их поля:
 - expense — потратили деньги. date, amount, currency, category (одна из: ${CATS.join(", ")}), title — что купили, коротко; account — счёт из списка, если назван или назван банк; «с карты», «картой» — account "карта".
-  currency — только если валюта названа явно («тенге», «рублей», «$»); если не названа — VND. «С карты» валюту не меняет: сумма всё равно в донгах.
+  currency — если валюта названа явно («тенге», «рублей», «$») или назван счёт в этой валюте («с рублёвого счёта» — RUB и account этого счёта); иначе VND. «С карты» валюту не меняет: сумма всё равно в донгах.
   Вода, купленная в магазине, — «Питание»; «Коммуналка» — только счета за свет, воду по счётчику, интернет, мусор.
   account всегда копируй точно из списка «Счета». Банк узнавай по валюте: Kaspi/Каспи/Халык — счёт в KZT, Тинькофф/Т-Банк/Сбер/Альфа — счёт в RUB, наличные во Вьетнаме — счёт в VND. currency — валюта цены, а не карты: «кофе 100 тысяч с каспи» — это 100000 VND с счёта в KZT.
 - income — получили деньги: зарплата, перевод от кого-то, кэшбэк, продажа. date, amount, currency, title — источник, коротко с заглавной буквы («Зарплата»); account — счёт, если назван.
@@ -429,7 +429,7 @@ const prompt = (c: Ctx) => `Ты помощник пары, которая жи�
 - goal_add — отложили деньги в существующую цель («отложили 5 миллионов на айфон»). title — цель из списка ниже, amount, currency. Это не expense: деньги отложены, а не потрачены.
 - done — что-то сделано («купил переходник», «билеты в Дананг купили», «йогу провели», «курицу купил» — пункт списка покупок). section — notes, events, trips или shopping; title — текст заметки, события или пункта чек-листа из списков ниже; city — поездка, если это пункт чек-листа.
 - reschedule — перенести событие на другую дату или время. title — событие из списка ниже, date, time_from, time_to.
-- delete — удалить запись («удали заметку про визу», «стоматолог отменился», «убери расход на кофе, это ошибка»). section (${SECTIONS.join(", ")}), title — текст записи из списков ниже (для расхода — описание, для дохода — источник).
+- delete — удалить запись («удали заметку про визу», «стоматолог отменился», «убери расход на кофе, это ошибка»). Вопрос о записи («ты с рублёвого списал?», «куда записал?») — это ask, а не delete. section (${SECTIONS.join(", ")}), title — текст записи из списков ниже (для расхода — описание, для дохода — источник).
 - useful — добавить в шпаргалку «Полезное». key (${Object.entries(USEFUL).map(([k, v]) => k + " — " + v).join(", ")}), text.
 - setting — изменить настройку сайта. key (${Object.entries(SETTINGS).map(([k, v]) => k + " — " + v).join(", ")}), value.
 - weight — взвесился («вес 78,4», «утром 79 и 2»). amount — вес в килограммах, date, text — заметка. Для удаления взвешивания в delete title — его дата YYYY-MM-DD.
@@ -544,6 +544,7 @@ async function apply(r: Rec, c: Ctx): Promise<Done> {
       const ops: Op[] = [];
       // a foreign currency is always paid from an account in it; dong only when the account is named or one exists
       let charged = "";
+      let from = "";
       if (r.currency !== "VND" || r.account || c.accounts.some((a) => a.cur === "VND")) {
         const a = await account(r.account, r.currency);
         ops.push(...a.ops);
@@ -556,9 +557,11 @@ async function apply(r: Rec, c: Ctx): Promise<Done> {
           Object.assign(item, { orig, cur: a.acc.cur });
           if (a.acc.cur !== r.currency) charged = ` · списано ${cash(orig, a.acc.cur)} с ${esc(a.acc.name)}`;
         }
+        from = charged || ` · с ${esc(a.acc.name)}`;
       }
       ops.push(await add("expenses", item));
-      return { line: `💸 Расход ${money(vnd)}${inVnd} · ${esc(item.cat)}${r.title ? " · " + esc(r.title) : ""}${charged} · ${dshort(date)}`, ops };
+      const sum = r.currency !== "VND" ? `${cash(r.amount, r.currency)} (≈ ${money(vnd)})` : money(vnd);
+      return { line: `💸 Расход ${sum} · ${esc(item.cat)}${r.title ? " · " + esc(r.title) : ""}${from} · ${dshort(date)}`, ops };
     }
     case "income": {
       if (!r.amount) return { line: "❓ Не расслышал сумму дохода", ops: [] };
@@ -957,7 +960,7 @@ ${byMonth.join("\n")}
 Прогноз до конца месяца (посчитан кодом): ${plain(await forecast(c)) || "нет счетов"}
 Траты этого месяца по дням (₫): ${[...new Set(cur.map((e) => e.date))].map((d) => `${d}: ${Math.round(sumOf(cur.filter((e) => e.date === d), "amount"))}`).join("; ") || "нет"}
 Все расходы этого месяца (дата, сумма ₫, категория, описание):
-${lines(cur.map((e) => `${e.date} ${e.amount} ${e.cat} ${e.note || ""}`))}
+${lines(cur.map((e) => `${e.date} ${e.amount} ${e.cat} ${e.note || ""}${e.cur && e.cur !== "VND" ? ` (${e.orig} ${e.cur})` : ""}${c.accounts.find((a) => a.id === e.acc) ? ", счёт " + c.accounts.find((a) => a.id === e.acc)!.name : ""}`))}
 Доходы за последние месяцы:
 ${lines(c.incomes.filter((i) => i.date >= months[0]).map((i) => `${i.date} ${i.amount} ${i.cur} (${i.vnd} ₫) ${i.source}`))}
 Обмены валют:
@@ -1479,7 +1482,16 @@ async function handle(u: any) {
         continue;
       }
       // a sum without a named currency is in dong; paid «с карты» it stays in dong and is charged to the card's account at the rate
-      if (DONG_KINDS.includes(r.kind) && r.currency !== "VND" && !CUR_WORD.test(input)) r.currency = "VND";
+      if (DONG_KINDS.includes(r.kind) && !CUR_WORD.test(input)) {
+        const named = r.account && !/карт|card/i.test(r.account) && !CARD_SAID.test(input) ? pick(c.accounts, r.account, (a) => a.name) : undefined;
+        r.currency = named && named.cur !== "VND" ? named.cur : "VND";
+      }
+      // a question about what was recorded («ты с рублёвого списал?») is answered, never taken for a request to delete
+      if (r.kind === "delete" && !/удал|отмен|убер|убра|сотр|стер|не надо|ошиб|лишн/i.test(input)) {
+        await tg("sendChatAction", { chat_id: chat, action: "typing" });
+        answers.push(await ask(input, c, history));
+        continue;
+      }
       if (r.kind === "expense" && !r.account && CARD_SAID.test(input) && records.filter((x) => x.kind === "expense").length === 1) r.account = "карта";
       // the AI sometimes re-reads the expenses it was shown: one that is already recorded is not added again
       // unless the message itself names a sum
