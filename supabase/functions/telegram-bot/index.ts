@@ -267,6 +267,11 @@ function balances(c: Ctx): { acc: Item; bal: number }[] {
   });
 }
 
+// a worker is stopped 150 s after it starts (the Free plan's wall clock), even in the middle of an answer;
+// AI calls get only what is left of that, so a slow one gives way to the fallback instead of being cut off
+const BOOT = Date.now();
+const timeLeft = () => BOOT + 145_000 - Date.now();
+
 /* ---------- the AI: Claude when an Anthropic key is in the Vault, the free Groq models without it or when Claude fails ---------- */
 const CLAUDE_MODEL = "claude-opus-5-5";
 let claudeClient: Anthropic | null = null;
@@ -277,7 +282,8 @@ async function claude(): Promise<Anthropic | null> {
 }
 // one request to Claude: system messages go to the system prompt, the rest must start with the user;
 // a safety decline is re-run on another model by the API itself (fallbacks), web search answers can take several rounds (pause_turn)
-async function claudeCall(cl: Anthropic, messages: Msg[], opt: { maxTokens?: number; effort?: string; schema?: unknown; web?: boolean }): Promise<string> {
+async function claudeCall(cl: Anthropic, messages: Msg[], opt: { maxTokens?: number; effort?: string; schema?: unknown; web?: boolean; timeoutMs?: number }): Promise<string> {
+  if (timeLeft() < 20_000) throw new Error("Claude: no time left in this worker");
   const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
   const turns: any[] = messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role, content: m.content }));
   while (turns.length && turns[0].role !== "user") turns.shift();
@@ -286,8 +292,8 @@ async function claudeCall(cl: Anthropic, messages: Msg[], opt: { maxTokens?: num
       model: CLAUDE_MODEL, max_tokens: opt.maxTokens ?? 16000, system, messages: turns,
       betas: ["server-side-fallback-2026-07-01"], fallbacks: "default",
       output_config: { effort: opt.effort ?? "medium", ...(opt.schema ? { format: { type: "json_schema", schema: opt.schema } } : {}) },
-      ...(opt.web ? { tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 3, user_location: { type: "approximate", city: "Nha Trang", country: "VN", timezone: "Asia/Ho_Chi_Minh" } }] } : {}),
-    } as any);
+      ...(opt.web ? { tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 3 }] } : {}),
+    } as any, { timeout: Math.max(5_000, Math.min(opt.timeoutMs ?? 90_000, timeLeft() - 12_000)), maxRetries: 0 });
     if (res.stop_reason === "pause_turn") { turns.push({ role: "assistant", content: res.content }); continue; }
     if (res.stop_reason === "refusal") throw new Error("CLAUDE_REFUSAL");
     return res.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("").trim();
@@ -300,7 +306,8 @@ async function aiCall(messages: Msg[], opt: { json?: boolean; maxTokens?: number
   if (cl) {
     try {
       const out = await claudeCall(cl, opt.json ? [...messages, { role: "system", content: "Ответь только JSON-объектом, без пояснений и без ```." }] : messages,
-        { maxTokens: opt.json ? 16000 : Math.max(4000, (opt.maxTokens ?? 3000) * 3), effort: opt.effort ?? (opt.json ? "low" : "medium"), web: opt.web });
+        { maxTokens: opt.json ? 16000 : Math.max(4000, (opt.maxTokens ?? 3000) * 3), effort: opt.effort ?? (opt.json ? "low" : "medium"), web: opt.web,
+          timeoutMs: opt.noWait ? 20_000 : opt.web ? 90_000 : 60_000 });
       if (!opt.json) return out;
       const j = out.replace(/^```(?:json)?\s*|\s*```$/g, "");
       JSON.parse(j);
@@ -487,7 +494,7 @@ async function extract(input: string, c: Ctx, history: Msg[] = []): Promise<{ re
   const cl = await claude();
   if (cl) {
     try {
-      const out = await claudeCall(cl, [{ role: "system", content: prompt(c) }, ...history.slice(-8), { role: "user", content: input }], { maxTokens: 16000, effort: "low", schema: RECORD_SCHEMA });
+      const out = await claudeCall(cl, [{ role: "system", content: prompt(c) }, ...history.slice(-8), { role: "user", content: input }], { maxTokens: 16000, effort: "low", schema: RECORD_SCHEMA, timeoutMs: 40_000 });
       return normalize(JSON.parse(out || "{}"));
     } catch (e) {
       console.error(e);
@@ -1078,7 +1085,7 @@ async function groqCall(messages: Msg[], opt: { json?: boolean; maxTokens?: numb
       if (m) wait = Math.max(wait, Math.min(20, Number(m[1])));
     }
     // a tip is not worth holding the reply for: noWait gives up instead of waiting
-    if (!wait || opt.noWait) break;
+    if (!wait || opt.noWait || timeLeft() < wait * 1000 + 15_000) break;
     await new Promise((ok) => setTimeout(ok, wait * 1000 + 300));
   }
   throw new Error("Groq: " + last);
@@ -1430,6 +1437,10 @@ async function handle(u: any) {
 
   let input = msg;
   const voice = m.voice ?? m.audio ?? m.video_note;
+  let replied = false;
+  const late = setTimeout(() => {
+    if (!replied) say(chat, "⏳ ИИ сейчас тормозит и не успел ответить. Повтори сообщение через минуту; если что-то успело записаться, увидишь это на сайте.");
+  }, Math.max(3_000, timeLeft() - 4_000));
   try {
     if (voice) {
       await tg("sendChatAction", { chat_id: chat, action: "typing" });
@@ -1445,6 +1456,7 @@ async function handle(u: any) {
     const st = await chatState(chat);
     const history: Msg[] = st?.convo ?? [];
     const answer = async (t: string, extra: Record<string, unknown> = {}) => {
+      replied = true;
       await say(chat, heard + t, extra);
       await remember(chat, input, t);
     };
@@ -1524,6 +1536,8 @@ async function handle(u: any) {
     if (/credit balance/i.test(err)) return say(chat, "На счёте Anthropic закончились деньги, ИИ не ответил и ничего не записал. Пополните баланс в console.anthropic.com → Billing.");
     if (/rate limit|tokens per/i.test(err)) return say(chat, "Бесплатный ИИ сейчас перегружен, ничего не записал. Повторите, пожалуйста, через минуту.");
     return say(chat, "Что-то пошло не так, запись не сохранена. Попробуйте ещё раз.");
+  } finally {
+    clearTimeout(late);
   }
 }
 
