@@ -834,21 +834,25 @@ function leftText(c: Ctx, day: string): string {
 // where the money is heading: what is on all accounts now, and the everyday pace (without rent and trips)
 // of the last 7 days carried on to the month's end; incomes still to come are not counted
 const ONE_OFF = ["Аренда", "Путешествия"];
-async function forecast(c: Ctx, day = today()): Promise<string> {
-  if (!c.accounts.length) return "";
+async function forecastData(c: Ctx, day = today()): Promise<{ now: number; pace: number; end: number; runOut: string }> {
   let now = 0;
   for (const { acc, bal } of balances(c)) now += bal * (await vndRate(acc.cur, c));
-  if (now <= 0) return "💰 На счетах денег не осталось.";
   // the pace window: the 7 days before today, fewer when the records are younger; only today when there is nothing earlier
   const first = c.expenses.reduce((m, e) => (e.date && e.date < m ? e.date : m), day);
   const from = first > addDays(day, -7) ? first : addDays(day, -7);
   const to = from === day ? addDays(day, 1) : day, n = Math.max(1, Math.round((Date.parse(to) - Date.parse(from)) / 864e5));
   const pace = sumOf(c.expenses.filter((e) => e.date >= from && e.date < to && !ONE_OFF.includes(e.cat)), "amount") / n;
+  const end = now - pace * (daysLeftFrom(day) - 1);
+  return { now, pace, end, runOut: pace && end < 0 ? addDays(day, Math.max(0, Math.floor(now / pace))) : "" };
+}
+async function forecast(c: Ctx, day = today()): Promise<string> {
+  if (!c.accounts.length) return "";
+  const { now, pace, end, runOut } = await forecastData(c, day);
+  if (now <= 0) return "💰 На счетах денег не осталось.";
   let out = `💰 На всех счетах сейчас ≈ ${money(now)}`;
   if (!pace) return out;
-  const rest = daysLeftFrom(day) - 1, end = now - pace * rest;
   out += `. Обычные траты (без аренды и поездок) ≈ ${money(pace)} в день: `;
-  out += end >= 0 ? `при таком темпе к концу месяца останется ≈ ${money(end)}` : `при таком темпе деньги закончатся примерно ${dshort(addDays(day, Math.floor(now / pace)))}`;
+  out += end >= 0 ? `при таком темпе к концу месяца останется ≈ ${money(end)}` : `при таком темпе деньги закончатся примерно ${dshort(runOut)}`;
   if (end < now * 0.1) out += `. Чтобы хватило до конца месяца, не больше ≈ ${money(now / daysLeftFrom(day))} в день`;
   return out + " (новые доходы не учтены)";
 }
@@ -1002,6 +1006,101 @@ async function ask(question: string, c: Ctx, history: Msg[] = []): Promise<strin
   // Claude reasons over the data at high effort and may look things up on the web; Groq answers from the data alone
   return fmt(await aiCall([{ role: "system", content: ASK_SYSTEM + "\n" + toneText(c) + "\n\nДанные:\n" + data }, ...history.slice(-12), { role: "user", content: question }],
     { maxTokens: 2000, temperature: 0.4, effort: "high", web: true }));
+}
+
+/* ---------- the panel: a live widget in the chat (Bot API 10.4 sendWidget) ---------- */
+// the widget's quick buttons: icon, what, category, the usual sum (changed with − / + before recording)
+const QUICK: [string, string, string, number][] = [
+  ["☕", "Кофе", "Кафе и рестораны", 40000], ["🚕", "Такси", "Транспорт", 30000], ["🛒", "Продукты", "Питание", 100000],
+  ["🍜", "Кафе", "Кафе и рестораны", 150000], ["💧", "Вода", "Питание", 10000], ["🍌", "Фрукты", "Питание", 50000],
+];
+// one self-contained HTML document, run by Telegram in a sandbox without network: it shows the state it is given
+// (chat_data) and asks the bot through TelegramWidget.request; source and browser check: qa/panel_widget.html, qa/panel_check.py
+const PANEL_HTML = "<style>\n*{box-sizing:border-box;margin:0}\nbody{font:14px/1.35 system-ui,sans-serif;color:var(--tg-theme-text-color);padding:12px 12px 10px}\n.h,.r{display:flex;justify-content:space-between;align-items:center;gap:8px}\n.s{color:var(--tg-theme-hint-color);font-size:12px}\n.b{font-size:26px;font-weight:700;margin-top:4px}\n.bar{height:6px;border-radius:3px;background:var(--tg-theme-secondary-bg-color);margin:8px 0 10px;overflow:hidden}\n.bar i{display:block;height:100%;border-radius:3px;background:var(--tg-theme-button-color)}\n.x{color:var(--tg-theme-destructive-text-color)}\n.ok{color:#2f9e5b}\n.a{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}\n.a span,.q button,.r button{background:var(--tg-theme-secondary-bg-color);border-radius:10px;padding:5px 9px;font-size:12px}\n.q{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}\nbutton{border:0;color:inherit;font:inherit;cursor:pointer}\n.q button{padding:8px 4px;font-size:13px;line-height:1.25}\n.r{margin-top:8px}.r b{font-size:20px}\n.r button{flex:1;padding:9px 6px;font-size:13px}\n.r .on,.go{background:var(--tg-theme-button-color)!important;color:var(--tg-theme-button-text-color)}\n.t{margin-top:10px;font-size:13px;text-align:center}\n.t u{color:var(--tg-theme-link-color);margin-left:6px}\n</style><div id=\"app\"></div><script>\nvar A=document.getElementById(\"app\"),W=window.TelegramWidget,Q=__QUICK__,S={},sel=-1,amt=0,card=0,msg='',busy=0,tm;\nfunction n(x){x=Math.round(x||0);var a=Math.abs(x);return a>=1e6?(x/1e6).toFixed(a>=1e7?1:2).replace('.',',').replace(/,?0+$/,'')+' млн':a>=1e3?Math.round(x/1e3)+' тыс':''+x}\nfunction f(x){return Math.round(x).toLocaleString('ru-RU')}\nfunction R(){var s=S,h='';\nif(s.d==null){A.innerHTML='<div class=s>Данных пока нет</div>';return}\nvar p=s.l>0?Math.min(100,s.t/s.l*100):100,o=s.l<=0||s.t>s.l;\nh+='<div class=h><span class=s>Сегодня, '+s.d+'</span><span class=s onclick=\"ask(\\'r\\')\">обновить</span></div>';\nh+='<div class=b>'+n(s.t)+' ₫</div><div class=s>'+(s.l>0?'потрачено из '+n(s.l)+' ₫ на день':'бюджет месяца уже превышен')+'</div>';\nh+='<div class=bar><i style=\"width:'+p+'%'+(o?';background:var(--tg-theme-destructive-text-color)':'')+'\"></i></div>';\nh+=(s.z?'<b class=x>При таком темпе деньги кончатся ~'+s.z+'</b>':'<b class=ok>До конца месяца хватит</b><span class=s> · останется '+n(s.r)+' ₫</span>')+'<div class=s>на счетах '+n(s.m)+' ₫ · обычные траты '+n(s.p)+' ₫ в день</div>';\nh+='<div class=a>'+(s.a||[]).map(function(a){return'<span>'+a[0]+' <b>'+(a[1]=='₫'?n(a[2]):f(a[2]))+'</b> '+a[1]+'</span>'}).join('')+'</div>';\nif(sel<0)h+='<div class=q>'+Q.map(function(q,i){return'<button onclick=\"pick('+i+')\">'+q[0]+' '+q[1]+'<br><span class=s>'+n(q[2])+'</span></button>'}).join('')+'</div>';\nelse{var q=Q[sel];h+='<div class=s>'+q[0]+' '+q[1]+'</div><div class=r><button onclick=\"st(-1)\">−</button><b>'+f(amt)+' ₫</b><button onclick=\"st(1)\">+</button></div>'+\n'<div class=r><button class=\"'+(card?'':'on')+'\" onclick=\"card=0;R()\">Наличные</button><button class=\"'+(card?'on':'')+'\" onclick=\"card=1;R()\">Карта</button></div>'+\n'<div class=r><button onclick=\"sel=-1;R()\">Отмена</button><button class=go onclick=\"go()\">Записать</button></div>'}\nif(msg)h+='<div class=t>'+msg+(s.u&&!busy?'<u onclick=\"undo()\">отменить</u>':'')+'</div>';\nA.innerHTML=h}\nfunction ask(d){if(busy||!W)return;var r=W.request(d);busy=1;msg='Секунду…';R();\nr.then(function(a){busy=0;msg='';if(a.result)try{var o=JSON.parse(a.result);if(o.err)msg=o.err;else{S=o;msg=o.ok||''}}catch(e){}R();clearTimeout(tm);if(msg)tm=setTimeout(function(){msg='';R()},6000)},\nfunction(e){busy=0;msg=e&&e.code=='RATE_LIMITED'?'Слишком часто, подожди секунду':'Не получилось, попробуй ещё раз';R()})}\nfunction pick(i){sel=i;amt=Q[i][2];card=0;R()}\nfunction st(d){var k=amt>=100000?10000:5000;amt=Math.max(k,amt+d*k);R()}\nfunction go(){var i=sel;sel=-1;ask('a:'+i+':'+amt+':'+(card?'k':'c'))}\nfunction undo(){var u=S.u;S.u=0;ask('u:'+u)}\nfunction load(){try{var o=JSON.parse(W&&W.chatData||'{}');o.u=S.u;S=o}catch(e){}R()}\nif(W){W.onEvent('chatDataChanged',load);if(W.ready)W.ready()}load();\n</script>";
+const PANEL_RE = /^\/panel\b|^(открой |покажи )?(панель|виджет|дашборд)\s*$/i;
+// what the panel shows, as compact JSON within the 1024-byte limit of a widget's state
+async function panelState(c: Ctx, extra: Item = {}): Promise<string> {
+  const day = today(), m = day.slice(0, 7);
+  const fd = await forecastData(c, day);
+  const spentMonth = sumOf(c.expenses.filter((e) => String(e.date).startsWith(m)), "amount");
+  const s: Item = {
+    d: dshort(day), t: Math.round(sumOf(c.expenses.filter((e) => e.date === day), "amount")),
+    l: Math.round((c.budget - spentMonth) / daysLeftFrom(day)),
+    m: Math.round(fd.now), p: Math.round(fd.pace), r: Math.round(fd.end), z: fd.runOut ? dshort(fd.runOut) : "",
+    a: balances(c).map(({ acc, bal }) => [String(acc.name).slice(0, 16), (CUR[acc.cur] ?? CUR.VND)[0], Math.round(bal * 100) / 100]),
+    ...extra,
+  };
+  let out = JSON.stringify(s);
+  while (new TextEncoder().encode(out).length > 1024 && s.a.length) { s.a.pop(); out = JSON.stringify(s); }
+  return out;
+}
+// the webhook has to ask Telegram for widget queries as well; checked once per worker, when a panel is opened
+let widgetHook = false;
+async function ensureWidgetUpdates() {
+  if (widgetHook) return;
+  const info = await tg("getWebhookInfo", {});
+  const had: string[] = info?.result?.allowed_updates ?? [];
+  if (info?.result?.url && !had.includes("widget_query")) {
+    await tg("setWebhook", {
+      url: info.result.url, secret_token: await secret("telegram_webhook_secret"),
+      allowed_updates: [...new Set([...(had.length ? had : ["message", "callback_query"]), "widget_query"])],
+    });
+  }
+  await tg("setMyCommands", { commands: [{ command: "panel", description: "Панель: бюджет на сегодня и быстрые траты" }] });
+  widgetHook = true;
+}
+// a new panel, pinned so that it stays at the top of the chat and is kept up to date
+async function sendPanel(chat: number, c: Ctx): Promise<string> {
+  await ensureWidgetUpdates();
+  const r = await tg("sendWidget", { chat_id: chat, html: PANEL_HTML.replace("__QUICK__", JSON.stringify(QUICK.map(([i, t, , a]) => [i, t, a]))), chat_data: await panelState(c), allow_queries: true });
+  if (!r?.ok) {
+    console.error("sendWidget", r);
+    return "Не получилось открыть панель: " + esc(r?.description ?? "Telegram не ответил") + ". Если Telegram давно не обновлялся, обновите приложение.";
+  }
+  await tg("pinChatMessage", { chat_id: chat, message_id: r.result.message_id, disable_notification: true });
+  return "";
+}
+// every linked chat's pinned panel gets the new numbers; the edits are silent
+async function refreshPanels() {
+  const c = await context();
+  const st = await panelState(c);
+  for (const p of await people()) {
+    const r = await tg("getChat", { chat_id: p.chat_id });
+    const pin = r?.result?.pinned_message;
+    if (pin?.widget) await tg("editMessageWidgetData", { chat_id: p.chat_id, message_id: pin.message_id, chat_data: st });
+  }
+}
+// a tap in the panel: «r» refresh, «a:<quick>:<sum>:<c|k>» record an expense in cash or by card, «u:<id>» undo it
+async function widgetQuery(q: Item) {
+  const chat = q.from?.id;
+  const reply = (data: string) => tg("answerWidgetQuery", { widget_query_id: q.id, data });
+  const { data: link } = await db.from("vl_tg_links").select("email").eq("chat_id", chat).maybeSingle();
+  if (!link) return reply(JSON.stringify({ err: "Бот не подключён к сайту" }));
+  const [cmd, a, b, how] = String(q.data ?? "").split(":");
+  let c = await context();
+  let extra: Item = {}, changed = false;
+  if (cmd === "a" && QUICK[+a] && +b > 0 && +b < 1e9) {
+    const [icon, what, cat] = QUICK[+a];
+    const r = normalize({ records: [{ kind: "expense", amount: Math.round(+b), currency: "VND", category: cat, title: what, account: how === "k" ? "карта" : "" }] }).records[0];
+    const d = await apply(r, c);
+    if (d.ops.length) {
+      const { data: row } = await db.from("vl_bot_undo").insert({ chat_id: chat, ops: d.ops }).select("id").single();
+      extra = { ok: `${icon} ${what} ${money(+b)}${how === "k" ? " с карты" : ""} — записал`, u: row?.id ?? 0 };
+      changed = true;
+    } else extra = { err: "Не записалось: " + plain(d.line) };
+  } else if (cmd === "u" && a) {
+    const { data: row } = await db.from("vl_bot_undo").select("ops").eq("id", a).eq("chat_id", chat).maybeSingle();
+    if (row) {
+      await revert(row.ops as Op[]);
+      await db.from("vl_bot_undo").delete().eq("id", a);
+      extra = { ok: "Отменил" };
+      changed = true;
+    }
+  }
+  if (changed) c = await context();
+  await reply(await panelState(c, extra));
+  // the other person's panel follows
+  if (changed) await refreshPanels();
 }
 
 /* ---------- how the bot talks: a best friend with mat and teasing, or polite (settings.tone) ---------- */
@@ -1384,6 +1483,7 @@ const EXAMPLES = `• «Потратил 150 тысяч на кофе»
 
 // deno-lint-ignore no-explicit-any
 async function handle(u: any) {
+  if (u.widget_query) return widgetQuery(u.widget_query);
   if (u.callback_query) {
     const cq = u.callback_query, chat = cq.message.chat.id;
     const { data: link } = await db.from("vl_tg_links").select("email").eq("chat_id", chat).maybeSingle();
@@ -1402,6 +1502,7 @@ async function handle(u: any) {
       ok = true;
     }
     await tg("answerCallbackQuery", { callback_query_id: cq.id, text: ok ? "Отменено" : "Уже отменено" });
+    if (ok) await refreshPanels();
     // deno-lint-ignore no-explicit-any
     const kb = (cq.message.reply_markup?.inline_keyboard ?? []).map((row: any[]) => row.filter((x) => x.callback_data !== cq.data)).filter((row: any[]) => row.length);
     await tg("editMessageText", {
@@ -1431,6 +1532,8 @@ async function handle(u: any) {
   if (first && first !== link.name) await db.from("vl_tg_links").update({ name: first }).eq("chat_id", chat);
   if (msg === "/start" || msg === "/help") {
     return say(chat, `Отправьте голосовое или текст — я заполню любой раздел сайта: расходы и доходы в любой валюте, обмены между счетами, коммуналку, календарь, заметки, цели, поездки, жильё, питание, здоровье, «Полезное» и настройки. Записываю вес. Могу отметить сделанное, перенести или удалить запись и ответить, сколько потрачено и сколько денег на счетах.
+
+/panel — живая панель прямо в чате: сколько потратили сегодня, хватит ли денег до конца месяца, остатки на счетах и кнопки быстрых трат.
 
 Сам напоминаю о делах за час, утром присылаю план на день, вечером напоминаю записать расходы и присылаю итоги дня, по воскресеньям — отчёт за неделю, 1-го числа — за прошлый месяц. Если не взвешивались больше двух дней — напомню.\n\nНапример:\n${EXAMPLES}`);
   }
@@ -1462,6 +1565,12 @@ async function handle(u: any) {
     };
     // during the nutrition interview every message is an answer to it ("стоп" ends it)
     if (st?.mode === "coach") return answer(await coachTurn(chat, input, c, st));
+    if (PANEL_RE.test(input.trim())) {
+      replied = true;
+      const err = await sendPanel(chat, c);
+      if (err) await say(chat, err);
+      return;
+    }
     // the nutrition coach and the weekly menu are recognised without the AI, so they always start
     const quick = quickIntent(input, c);
     const { records, question } = quick ? { records: [quick], question: "" } : await extract(input, c, history);
@@ -1529,6 +1638,7 @@ async function handle(u: any) {
     const reply = [done.length ? "Записал:\n" + done.join("\n") : "", ...answers].filter(Boolean).join("\n\n");
     await answer(reply, buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {});
     for (const x of later) await say(chat, x);
+    if (done.length) await refreshPanels();
   } catch (e) {
     const err = String((e as Error).message);
     if (err === "NO_STT_KEY" || err === "NO_AI_KEY") return say(chat, "Бот ещё не до конца настроен: нужен ключ ИИ (Anthropic или бесплатный Groq). Как только он будет добавлен, я начну понимать голосовые и текст.");
