@@ -1033,25 +1033,39 @@ function quickBuys(c: Ctx): unknown[] {
     return [iconFor(e), esc(cap(String(e.note)).slice(0, 14)), Math.round(+e.amount), e.id];
   });
 }
-// one self-contained HTML document, run by Telegram in a sandbox without network: it shows the state it is given
-// (chat_data) and asks the bot through TelegramWidget.request; source and browser check: qa/panel_widget.html, qa/panel_check.py
-const PANEL_HTML = "<style>\n*{box-sizing:border-box;margin:0}\nbody{font:14px/1.3 system-ui,-apple-system,sans-serif;color:var(--tg-theme-text-color);padding:14px 12px 12px}\n.s{color:var(--tg-theme-hint-color);font-size:12px}\n.row{display:flex;align-items:center;gap:10px}\n.sp{justify-content:space-between}\n.hero{margin:10px 0 12px}\n.ring{flex:none;width:68px;height:68px}\n.ring circle{fill:none;stroke-width:7}\n.ring .bg{stroke:var(--tg-theme-secondary-bg-color)}\n.ring .fg{stroke:var(--tg-theme-button-color);stroke-linecap:round;transition:stroke-dashoffset .6s cubic-bezier(.2,.8,.2,1)}\n.ring.over .fg{stroke:var(--tg-theme-destructive-text-color)}\n.ring text{fill:var(--tg-theme-text-color);font:600 14px system-ui;text-anchor:middle}\n.big{font-size:26px;font-weight:700;letter-spacing:-.5px}\n.pill{border-radius:12px;padding:9px 11px;font-size:13px;margin-bottom:10px}\n.pill.g{background:rgba(52,168,83,.14)}.pill.r{background:rgba(229,57,53,.13)}\n.pill b{display:block;font-size:14px;margin-bottom:1px}\n.g b{color:#2e9d4f}.r b{color:var(--tg-theme-destructive-text-color)}\n.acc{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}\n.acc span{background:var(--tg-theme-secondary-bg-color);border-radius:9px;padding:4px 8px;font-size:12px}\nh4{font-size:12px;font-weight:600;color:var(--tg-theme-hint-color);margin:0 0 6px}\n.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:6px}\nbutton{border:0;font:inherit;color:inherit;background:var(--tg-theme-secondary-bg-color);border-radius:12px;padding:9px 6px;transition:transform .12s,opacity .12s}\nbutton:active{transform:scale(.95);opacity:.8}\n.qb{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:13px}\n.qb i{font-style:normal;font-size:20px}\n.main{width:100%;margin-top:8px;background:var(--tg-theme-button-color);color:var(--tg-theme-button-text-color);font-weight:600;padding:11px}\n.main:disabled{opacity:.45}\n.amt{font-size:32px;font-weight:700;text-align:center;margin:6px 0 10px;letter-spacing:-.5px}\n.ch{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px}\n.ch button,.seg button{font-size:12px;padding:7px 4px}\n.on{background:var(--tg-theme-button-color)!important;color:var(--tg-theme-button-text-color)}\n.seg{display:flex;gap:6px;margin-bottom:8px}.seg button{flex:1}\n.kp{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}\n.kp button{font-size:19px;padding:9px 0}\n.toast{margin-top:10px;border-radius:12px;padding:8px 10px;background:var(--tg-theme-secondary-bg-color);font-size:13px}\n.toast u{color:var(--tg-theme-link-color);text-decoration:none;font-weight:600}\n</style><div id=\"app\"></div><script>\nvar A=document.getElementById(\"app\"),W=window.TelegramWidget,C=__CHIPS__,S={},v=0,num='',ci=0,card=0,msg='',busy=0,tm;\nfunction n(x){x=Math.round(x||0);var a=Math.abs(x);return a>=1e6?(x/1e6).toFixed(a>=1e7?1:2).replace('.',',').replace(/,?0+$/,'')+' млн':a>=1e3?Math.round(x/1e3)+' тыс':''+x}\nfunction f(x){return Math.round(+x||0).toLocaleString('ru-RU')}\nfunction ring(t,l){var p=l>0?Math.min(1,t/l):1,c=176;return'<svg class=\"ring'+(l<=0||t>l?' over':'')+'\" viewBox=\"0 0 68 68\"><circle class=bg cx=34 cy=34 r=28 /><circle class=fg cx=34 cy=34 r=28 stroke-dasharray=\"'+c+'\" stroke-dashoffset=\"'+c*(1-p)+'\" transform=\"rotate(-90 34 34)\"/><text x=34 y=39>'+(l>0?Math.round(t/l*100)+'%':'!')+'</text></svg>'}\nfunction R(){var s=S,h='';if(s.d==null){A.innerHTML='<div class=s>Данных пока нет</div>';return}\nh+='<div class=\"row sp\"><b>Сегодня, '+s.d+'</b><span class=s style=\"font-size:19px\" onclick=\"ask(\\'r\\')\">⟳</span></div>';\nif(!v){h+='<div class=\"row hero\">'+ring(s.t,s.l)+'<div><div class=big>'+n(s.t)+' ₫</div><div class=s>'+(s.l>0?(s.t>s.l?'на '+n(s.t-s.l)+' больше лимита '+n(s.l):'из '+n(s.l)+' ₫ на сегодня'):'бюджет месяца превышен')+'</div></div></div>';\nh+=s.z?'<div class=\"pill r\"><b>Деньги кончатся ~'+s.z+'</b>если тратить '+n(s.p)+' ₫ в день, как сейчас</div>':'<div class=\"pill g\"><b>До конца месяца хватит</b>останется ~'+n(s.r)+' ₫ при нынешнем темпе</div>';\nh+='<div class=acc>'+(s.a||[]).map(function(a){return'<span>'+a[0]+' <b>'+(a[1]=='₫'?n(a[2]):f(a[2]))+'</b> '+a[1]+'</span>'}).join('')+'</div>';\nvar q=s.q||[];h+='<h4>Быстрая покупка</h4>'+(q.length?'<div class=grid>'+q.map(function(b){return'<button class=qb onclick=\"ask(\\'b:'+b[3]+'\\')\"><i>'+b[0]+'</i>'+b[1]+'<span class=s>'+n(b[2])+'</span></button>'}).join('')+'</div>':'<div class=s>Здесь появятся траты, которые повторяются с одной суммой</div>');\nh+='<button class=main onclick=\"v=1;num=\\'\\';R()\">＋ Другая сумма</button>'}\nelse{h+='<div class=amt>'+(num?f(num):'0')+' ₫</div><div class=ch>'+C.map(function(c,i){return'<button class=\"'+(i==ci?'on':'')+'\" onclick=\"ci='+i+';R()\">'+c[0]+' '+c[1]+'</button>'}).join('')+'</div>';\nh+='<div class=seg><button class=\"'+(card?'':'on')+'\" onclick=\"card=0;R()\">Наличные</button><button class=\"'+(card?'on':'')+'\" onclick=\"card=1;R()\">Карта</button></div><div class=kp>'+\n[1,2,3,4,5,6,7,8,9,'000',0,'⌫'].map(function(k){return'<button onclick=\"key(\\''+k+'\\')\">'+k+'</button>'}).join('')+'</div>';\nh+='<div class=row style=\"margin-top:8px\"><button style=\"flex:1\" onclick=\"v=0;R()\">Отмена</button><button class=main style=\"flex:2;margin:0\" '+(+num?'':'disabled')+' onclick=\"go()\">Записать</button></div>'}\nif(msg)h+='<div class=toast>'+msg+(s.u&&!busy?' · <u onclick=\"undo()\">отменить</u>':'')+'</div>';\nA.innerHTML=h}\nfunction key(k){if(k=='⌫')num=num.slice(0,-1);else if(num.length<10&&(num||k!='0'&&k!='000'))num+=k;R()}\nfunction ask(d){if(busy||!W)return;var r=W.request(d);busy=1;msg='Секунду…';R();\nr.then(function(a){busy=0;msg='';if(a.result)try{var o=JSON.parse(a.result);if(o.err)msg=o.err;else{S=o;msg=o.ok||''}}catch(e){}R();clearTimeout(tm);if(msg)tm=setTimeout(function(){msg='';R()},7000)},\nfunction(e){busy=0;msg=e&&e.code=='RATE_LIMITED'?'Слишком часто, подожди секунду':'Не получилось, попробуй ещё раз';R()})}\nfunction go(){v=0;ask('k:'+ci+':'+(+num)+':'+(card?'k':'c'))}\nfunction undo(){var u=S.u;S.u=0;ask('u:'+u)}\nfunction load(){try{var o=JSON.parse(W&&W.chatData||'{}');o.u=S.u;S=o}catch(e){}R()}\nif(W){W.onEvent('chatDataChanged',load);if(W.ready)W.ready()}load();\n</script>";
+// two pinned widgets, each one self-contained HTML document run by Telegram in a sandbox without network: they show the state
+// they are given (chat_data) and ask the bot through TelegramWidget.request. «Финансы»: the money, the limit, the forecast;
+// «Сегодня»: today's expenses, quick buys and a keypad. Sources and browser check: qa/panel_money.html, qa/panel_today.html, qa/panel_check.py
+const MONEY_HTML = "<style>\n*{box-sizing:border-box;margin:0}\nbody{font:14px/1.3 system-ui,-apple-system,sans-serif;color:var(--tg-theme-text-color);padding:14px 12px 12px}\n.s{color:var(--tg-theme-hint-color);font-size:12px}\n.row{display:flex;align-items:center;justify-content:space-between;gap:10px}\n.big{font-size:28px;font-weight:700;letter-spacing:-.5px;margin:8px 0 2px}\n.acc{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 12px}\n.acc span{background:var(--tg-theme-secondary-bg-color);border-radius:9px;padding:4px 8px;font-size:12px}\n.tiles{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}\n.tile{background:var(--tg-theme-secondary-bg-color);border-radius:12px;padding:9px 10px}\n.tile b{display:block;font-size:17px;margin-top:2px}\n.bar{height:6px;border-radius:3px;background:var(--tg-theme-secondary-bg-color);overflow:hidden;margin-top:6px}\n.bar i{display:block;height:100%;border-radius:3px;background:var(--tg-theme-button-color);transition:width .6s cubic-bezier(.2,.8,.2,1)}\n.x{color:var(--tg-theme-destructive-text-color)}\n.over i{background:var(--tg-theme-destructive-text-color)}\n.pill{border-radius:12px;padding:9px 11px;font-size:13px;margin-bottom:12px}\n.pill.g{background:rgba(52,168,83,.14)}.pill.r{background:rgba(229,57,53,.13)}\n.pill b{display:block;font-size:14px;margin-bottom:1px}\n.g b{color:#2e9d4f}.r b{color:var(--tg-theme-destructive-text-color)}\nh4{font-size:12px;font-weight:600;color:var(--tg-theme-hint-color);margin:0 0 6px}\n.cat{margin-bottom:7px;font-size:13px}\n.cat .bar{height:5px;margin-top:3px}\n</style><div id=\"app\"></div><script>\nvar A=document.getElementById(\"app\"),W=window.TelegramWidget,S={},busy=0;\nfunction n(x){x=Math.round(x||0);var a=Math.abs(x);return a>=1e6?(x/1e6).toFixed(a>=1e7?1:2).replace('.',',').replace(/,?0+$/,'')+' млн':a>=1e3?Math.round(x/1e3)+' тыс':''+x}\nfunction f(x){return Math.round(+x||0).toLocaleString('ru-RU')}\nfunction R(){var s=S,h='';if(s.mo==null){A.innerHTML='<div class=s>Данных пока нет</div>';return}\nvar top=(s.c&&s.c[0]&&s.c[0][1])||1,used=s.b>0?Math.min(100,s.ms/s.b*100):100;\nh+='<div class=row><b>Финансы · '+s.mo+'</b><span class=s style=\"font-size:19px\" onclick=\"ref()\">'+(busy?'…':'⟳')+'</span></div>';\nh+='<div class=s style=\"margin-top:8px\">На всех счетах</div><div class=big style=\"margin-top:0\">'+n(s.m)+' ₫</div>';\nh+='<div class=acc>'+(s.a||[]).map(function(a){return'<span>'+a[0]+' <b>'+(a[1]=='₫'?n(a[2]):f(a[2]))+'</b> '+a[1]+'</span>'}).join('')+'</div>';\nh+='<div class=tiles><div class=tile><span class=s>Можно в день</span><b'+(s.l>0?'':' class=x')+'>'+(s.l>0?n(s.l)+' ₫':'0 ₫')+'</b><span class=s>ещё '+s.dl+' дн.</span></div>';\nh+='<div class=tile><span class=s>За месяц</span><b>'+n(s.ms)+' ₫</b><span class=s>из '+n(s.b)+' ₫</span><div class=\"bar'+(s.ms>s.b?' over':'')+'\"><i style=\"width:'+used+'%\"></i></div></div></div>';\nh+=s.z?'<div class=\"pill r\"><b>Деньги кончатся ~'+s.z+'</b>если тратить '+n(s.p)+' ₫ в день, как сейчас</div>':'<div class=\"pill g\"><b>До конца месяца хватит</b>останется ~'+n(s.r)+' ₫ при нынешнем темпе</div>';\nif(s.c&&s.c.length)h+='<h4>На что уходит в этом месяце</h4>'+s.c.map(function(c){return'<div class=cat><div class=row><span>'+c[0]+'</span><b>'+n(c[1])+' ₫</b></div><div class=bar><i style=\"width:'+Math.round(c[1]/top*100)+'%\"></i></div></div>'}).join('');\nA.innerHTML=h}\nfunction ref(){if(busy||!W)return;var r=W.request('o');busy=1;R();r.then(function(a){busy=0;try{if(a.result)S=JSON.parse(a.result)}catch(e){}R()},function(){busy=0;R()})}\nfunction load(){try{S=JSON.parse(W&&W.chatData||'{}')}catch(e){}R()}\nif(W){W.onEvent('chatDataChanged',load);if(W.ready)W.ready()}load();\n</script>";
+const TODAY_HTML = "<style>\n*{box-sizing:border-box;margin:0}\nbody{font:14px/1.3 system-ui,-apple-system,sans-serif;color:var(--tg-theme-text-color);padding:14px 12px 12px}\n.s{color:var(--tg-theme-hint-color);font-size:12px}\n.row{display:flex;align-items:center;gap:10px}\n.sp{justify-content:space-between}\n.hero{margin:8px 0 10px}\n.big{font-size:28px;font-weight:700;letter-spacing:-.5px}\n.bar{height:6px;border-radius:3px;background:var(--tg-theme-secondary-bg-color);overflow:hidden;margin:6px 0 2px}\n.bar i{display:block;height:100%;border-radius:3px;background:var(--tg-theme-button-color);transition:width .6s cubic-bezier(.2,.8,.2,1)}\n.over i{background:var(--tg-theme-destructive-text-color)}\n.x{color:var(--tg-theme-destructive-text-color)}\n.list{margin:6px 0 12px}\n.it{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--tg-theme-secondary-bg-color);font-size:13px}\n.it:last-child{border-bottom:0}\n.it i{font-style:normal;font-size:17px;width:22px;text-align:center}\n.it .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n.it button{padding:4px 9px;font-size:12px}\nh4{font-size:12px;font-weight:600;color:var(--tg-theme-hint-color);margin:0 0 6px}\n.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:6px}\nbutton{border:0;font:inherit;color:inherit;background:var(--tg-theme-secondary-bg-color);border-radius:12px;padding:9px 6px;transition:transform .12s,opacity .12s}\nbutton:active{transform:scale(.95);opacity:.8}\n.qb{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:13px}\n.qb i{font-style:normal;font-size:20px}\n.main{width:100%;margin-top:8px;background:var(--tg-theme-button-color);color:var(--tg-theme-button-text-color);font-weight:600;padding:11px}\n.main:disabled{opacity:.45}\n.del{background:var(--tg-theme-destructive-text-color)!important;color:#fff}\n.amt{font-size:32px;font-weight:700;text-align:center;margin:6px 0 10px;letter-spacing:-.5px}\n.ch{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px}\n.ch button,.seg button{font-size:12px;padding:7px 4px}\n.on{background:var(--tg-theme-button-color)!important;color:var(--tg-theme-button-text-color)}\n.seg{display:flex;gap:6px;margin-bottom:8px}.seg button{flex:1}\n.kp{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}\n.kp button{font-size:19px;padding:9px 0}\n.toast{margin-top:10px;border-radius:12px;padding:8px 10px;background:var(--tg-theme-secondary-bg-color);font-size:13px}\n.toast u{color:var(--tg-theme-link-color);text-decoration:none;font-weight:600}\n</style><div id=\"app\"></div><script>\nvar A=document.getElementById(\"app\"),W=window.TelegramWidget,C=__CHIPS__,S={},v=0,num='',ci=0,card=0,dl='',msg='',busy=0,tm;\nfunction n(x){x=Math.round(x||0);var a=Math.abs(x);return a>=1e6?(x/1e6).toFixed(a>=1e7?1:2).replace('.',',').replace(/,?0+$/,'')+' млн':a>=1e3?Math.round(x/1e3)+' тыс':''+x}\nfunction f(x){return Math.round(+x||0).toLocaleString('ru-RU')}\nfunction R(){var s=S,h='';if(s.d==null){A.innerHTML='<div class=s>Данных пока нет</div>';return}\nh+='<div class=\"row sp\"><b>Сегодня, '+s.d+'</b><span class=s style=\"font-size:19px\" onclick=\"ask(\\'r\\')\">⟳</span></div>';\nif(!v){var o=s.l<=0||s.t>s.l,p=s.l>0?Math.min(100,s.t/s.l*100):100;\nh+='<div class=hero><div class=big>'+f(s.t)+' ₫</div><div class=\"bar'+(o?' over':'')+'\"><i style=\"width:'+p+'%\"></i></div><div class=s>'+(s.l>0?(s.t>s.l?'<span class=x>на '+n(s.t-s.l)+' больше лимита</span> '+n(s.l)+' ₫':'можно ещё '+n(s.l-s.t)+' ₫ из '+n(s.l)+' ₫'):'<span class=x>бюджет месяца превышен</span>')+'</div></div>';\nvar e=s.e||[];h+='<h4>Траты за день'+(s.more?' · ещё '+s.more+' выше':'')+'</h4><div class=list>'+(e.length?e.map(function(x){return'<div class=it><i>'+x[0]+'</i><span class=nm>'+x[1]+'<span class=s> · '+x[3]+'</span></span>'+\n(dl==x[4]?'<button class=del onclick=\"dl=\\'\\';ask(\\'d:'+x[4]+'\\')\">Удалить</button><button onclick=\"dl=\\'\\';R()\">Нет</button>':'<b onclick=\"dl=\\''+x[4]+'\\';R()\">'+f(x[2])+'</b>')+'</div>'}).join(''):'<div class=s>Пока ничего не записано</div>')+'</div>';\nvar q=s.q||[];if(q.length)h+='<h4>Быстрая покупка</h4><div class=grid>'+q.map(function(b){return'<button class=qb onclick=\"ask(\\'b:'+b[3]+'\\')\"><i>'+b[0]+'</i>'+b[1]+'<span class=s>'+n(b[2])+'</span></button>'}).join('')+'</div>';\nh+='<button class=main onclick=\"v=1;num=\\'\\';R()\">＋ Записать трату</button>'}\nelse{h+='<div class=amt>'+(num?f(num):'0')+' ₫</div><div class=ch>'+C.map(function(c,i){return'<button class=\"'+(i==ci?'on':'')+'\" onclick=\"ci='+i+';R()\">'+c[0]+' '+c[1]+'</button>'}).join('')+'</div>';\nh+='<div class=seg><button class=\"'+(card?'':'on')+'\" onclick=\"card=0;R()\">Наличные</button><button class=\"'+(card?'on':'')+'\" onclick=\"card=1;R()\">Карта</button></div><div class=kp>'+\n[1,2,3,4,5,6,7,8,9,'000',0,'⌫'].map(function(k){return'<button onclick=\"key(\\''+k+'\\')\">'+k+'</button>'}).join('')+'</div>';\nh+='<div class=row style=\"margin-top:8px\"><button style=\"flex:1\" onclick=\"v=0;R()\">Отмена</button><button class=main style=\"flex:2;margin:0\" '+(+num?'':'disabled')+' onclick=\"go()\">Записать</button></div>'}\nif(msg)h+='<div class=toast>'+msg+(s.u&&!busy?' · <u onclick=\"undo()\">отменить</u>':'')+'</div>';\nA.innerHTML=h}\nfunction key(k){if(k=='⌫')num=num.slice(0,-1);else if(num.length<10&&(num||k!='0'&&k!='000'))num+=k;R()}\nfunction ask(d){if(busy||!W)return;var r=W.request(d);busy=1;msg='Секунду…';R();\nr.then(function(a){busy=0;msg='';if(a.result)try{var o=JSON.parse(a.result);if(o.err)msg=o.err;else{S=o;msg=o.ok||''}}catch(e){}R();clearTimeout(tm);if(msg)tm=setTimeout(function(){msg='';R()},7000)},\nfunction(e){busy=0;msg=e&&e.code=='RATE_LIMITED'?'Слишком часто, подожди секунду':'Не получилось, попробуй ещё раз';R()})}\nfunction go(){v=0;ask('k:'+ci+':'+(+num)+':'+(card?'k':'c'))}\nfunction undo(){var u=S.u;S.u=0;ask('u:'+u)}\nfunction load(){try{var o=JSON.parse(W&&W.chatData||'{}');o.u=S.u;S=o}catch(e){}R()}\nif(W){W.onEvent('chatDataChanged',load);if(W.ready)W.ready()}load();\n</script>";
 const PANEL_RE = /^\/panel\b|^(открой |покажи )?(панель|виджет|дашборд)\s*$/i;
-// what the panel shows, as compact JSON within the 1024-byte limit of a widget's state
-async function panelState(c: Ctx, extra: Item = {}): Promise<string> {
-  const day = today(), m = day.slice(0, 7);
-  const fd = await forecastData(c, day);
-  const spentMonth = sumOf(c.expenses.filter((e) => String(e.date).startsWith(m)), "amount");
+// what the panels show, as compact JSON within the 1024-byte limit of a widget's state
+const bytes = (x: string) => new TextEncoder().encode(x).length;
+const dailyLimit = (c: Ctx, day: string) => Math.round((c.budget - sumOf(c.expenses.filter((e) => String(e.date).startsWith(day.slice(0, 7))), "amount")) / daysLeftFrom(day));
+async function moneyState(c: Ctx): Promise<string> {
+  const day = today(), m = day.slice(0, 7), fd = await forecastData(c, day);
   const s: Item = {
-    d: dshort(day), t: Math.round(sumOf(c.expenses.filter((e) => e.date === day), "amount")),
-    l: Math.round((c.budget - spentMonth) / daysLeftFrom(day)),
-    m: Math.round(fd.now), p: Math.round(fd.pace), r: Math.round(fd.end), z: fd.runOut ? dshort(fd.runOut) : "",
-    a: balances(c).map(({ acc, bal }) => [String(acc.name).slice(0, 16), (CUR[acc.cur] ?? CUR.VND)[0], Math.round(bal * 100) / 100]),
-    q: quickBuys(c),
-    ...extra,
+    mo: MONTHS[+m.slice(5) - 1], m: Math.round(fd.now), l: dailyLimit(c, day), dl: daysLeftFrom(day),
+    ms: Math.round(sumOf(c.expenses.filter((e) => String(e.date).startsWith(m)), "amount")), b: Math.round(c.budget),
+    p: Math.round(fd.pace), r: Math.round(fd.end), z: fd.runOut ? dshort(fd.runOut) : "",
+    a: balances(c).map(({ acc, bal }) => [esc(String(acc.name).slice(0, 16)), (CUR[acc.cur] ?? CUR.VND)[0], Math.round(bal * 100) / 100]),
+    c: spentIn(c, m + "-01", day).cats.slice(0, 3).map(([k, v]) => [esc(k), Math.round(v)]),
   };
   let out = JSON.stringify(s);
-  while (new TextEncoder().encode(out).length > 1024 && (s.q.length || s.a.length)) { (s.q.length ? s.q : s.a).pop(); out = JSON.stringify(s); }
+  while (bytes(out) > 1024 && (s.c.length || s.a.length)) { (s.c.length ? s.c : s.a).pop(); out = JSON.stringify(s); }
+  return out;
+}
+async function todayState(c: Ctx, extra: Item = {}): Promise<string> {
+  const day = today(), list = c.expenses.filter((e) => e.date === day);
+  const accName = (id: string) => esc(String(c.accounts.find((a) => a.id === id)?.name ?? "").slice(0, 10));
+  // the newest 6 fit the bubble's 600 px; the earlier ones are only counted
+  const s: Item = {
+    d: dshort(day), t: Math.round(sumOf(list, "amount")), l: dailyLimit(c, day),
+    e: list.slice(-6).map((e) => [iconFor(e), esc(cap(String(e.note || e.cat)).slice(0, 18)), Math.round(+e.amount), accName(e.acc), e.id]),
+    more: Math.max(0, list.length - 6), q: quickBuys(c), ...extra,
+  };
+  let out = JSON.stringify(s);
+  while (bytes(out) > 1024 && (s.q.length || s.e.length)) { (s.q.length ? s.q : s.e).shift(); s.more = list.length - s.e.length; out = JSON.stringify(s); }
   return out;
 }
 // the webhook has to ask Telegram for widget queries as well; checked once per worker, when a panel is opened
@@ -1069,28 +1083,38 @@ async function ensureWidgetUpdates() {
   await tg("setMyCommands", { commands: [{ command: "panel", description: "Панель: бюджет на сегодня и быстрые траты" }] });
   widgetHook = true;
 }
-// a new panel, pinned so that it stays at the top of the chat and is kept up to date
+// the two panels, pinned so that they stay at the top of the chat; their messages are remembered to keep them up to date
 async function sendPanel(chat: number, c: Ctx): Promise<string> {
   await ensureWidgetUpdates();
-  const r = await tg("sendWidget", { chat_id: chat, html: PANEL_HTML.replace("__CHIPS__", JSON.stringify(CHIPS.map(([i, t]) => [i, t]))), chat_data: await panelState(c), allow_queries: true });
-  if (!r?.ok) {
-    console.error("sendWidget", r);
-    return "Не получилось открыть панель: " + esc(r?.description ?? "Telegram не ответил") + ". Если Telegram давно не обновлялся, обновите приложение.";
+  const ids: Item = {};
+  for (const [k, html, state] of [["o", MONEY_HTML, await moneyState(c)], ["t", TODAY_HTML.replace("__CHIPS__", JSON.stringify(CHIPS.map(([i, t]) => [i, t]))), await todayState(c)]]) {
+    const r = await tg("sendWidget", { chat_id: chat, html, chat_data: state, allow_queries: true });
+    if (!r?.ok) {
+      console.error("sendWidget", r);
+      return "Не получилось открыть панель: " + esc(r?.description ?? "Telegram не ответил") + ". Если Telegram давно не обновлялся, обновите приложение.";
+    }
+    ids[k] = r.result.message_id;
   }
-  await tg("pinChatMessage", { chat_id: chat, message_id: r.result.message_id, disable_notification: true });
+  // the earlier panels (and any other pins of this chat) give way to the new pair; «Сегодня» is pinned last, so it shows on top
+  await tg("unpinAllChatMessages", { chat_id: chat });
+  for (const k of ["o", "t"]) await tg("pinChatMessage", { chat_id: chat, message_id: ids[k], disable_notification: true });
+  await db.from("vl_bot_chat").upsert({ chat_id: chat, panels: ids });
   return "";
 }
-// every linked chat's pinned panel gets the new numbers; the edits are silent
+// every chat's two panels get the new numbers; the edits are silent
 async function refreshPanels() {
+  const { data } = await db.from("vl_bot_chat").select("chat_id, panels");
+  const chats = (data ?? []).filter((r: Item) => r.panels?.o || r.panels?.t);
+  if (!chats.length) return;
   const c = await context();
-  const st = await panelState(c);
-  for (const p of await people()) {
-    const r = await tg("getChat", { chat_id: p.chat_id });
-    const pin = r?.result?.pinned_message;
-    if (pin?.widget) await tg("editMessageWidgetData", { chat_id: p.chat_id, message_id: pin.message_id, chat_data: st });
+  const o = await moneyState(c), t = await todayState(c);
+  for (const r of chats) {
+    if (r.panels.o) await tg("editMessageWidgetData", { chat_id: r.chat_id, message_id: r.panels.o, chat_data: o });
+    if (r.panels.t) await tg("editMessageWidgetData", { chat_id: r.chat_id, message_id: r.panels.t, chat_data: t });
   }
 }
-// a tap in the panel: «r» refresh, «b:<expense id>» buy that again, «k:<chip>:<sum>:<c|k>» a typed sum in cash or by card, «u:<id>» undo
+// a tap in a panel: «o» refresh «Финансы»; in «Сегодня» «r» refresh, «b:<expense id>» buy that again,
+// «k:<chip>:<sum>:<c|k>» a typed sum in cash or by card, «d:<expense id>» delete it, «u:<id>» undo the last of these
 async function widgetQuery(q: Item) {
   const chat = q.from?.id;
   const reply = (data: string) => tg("answerWidgetQuery", { widget_query_id: q.id, data });
@@ -1098,6 +1122,7 @@ async function widgetQuery(q: Item) {
   if (!link) return reply(JSON.stringify({ err: "Бот не подключён к сайту" }));
   const [cmd, a, b, how] = String(q.data ?? "").split(":");
   let c = await context();
+  if (cmd === "o") return reply(await moneyState(c));
   let extra: Item = {}, changed = false;
   const done = async (ops: Op[], ok: string) => {
     const { data: row } = await db.from("vl_bot_undo").insert({ chat_id: chat, ops }).select("id").single();
@@ -1111,6 +1136,13 @@ async function widgetQuery(q: Item) {
     else {
       const item = { ...e, id: uid(), date: today() };
       await done([await add("expenses", item)], `${iconFor(e)} ${esc(cap(String(e.note)))} ${money(+e.amount)} — записал`);
+    }
+  } else if (cmd === "d" && a) {
+    const e = c.expenses.find((x) => x.id === a);
+    if (!e) extra = { err: "Эта трата уже удалена" };
+    else {
+      await rpc("vl_remove", { p_sec: "expenses", p_id: e.id });
+      await done([{ op: "put", sec: "expenses", item: e }], `Удалил: ${esc(cap(String(e.note || e.cat)))} ${money(+e.amount)}`);
     }
   } else if (cmd === "k" && CHIPS[+a] && +b > 0 && +b < 1e10) {
     const [icon, what, cat] = CHIPS[+a];
@@ -1128,8 +1160,8 @@ async function widgetQuery(q: Item) {
     }
   }
   if (changed) c = await context();
-  await reply(await panelState(c, extra));
-  // the other person's panel follows
+  await reply(await todayState(c, extra));
+  // «Финансы» and the other person's panels follow
   if (changed) await refreshPanels();
 }
 
